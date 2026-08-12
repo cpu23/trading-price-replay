@@ -40,6 +40,12 @@ class TradeNotFoundError(ValueError):
     pass
 
 
+def _as_utc(value: datetime, name: str) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{name} must include an explicit UTC offset")
+    return value.astimezone(timezone.utc)
+
+
 def create_session(symbol: str, start: datetime, end: datetime, profile: str | None, visible_timeframe: str,
                    advance_step_minutes: int, chart_context_1m_bars: int, account_currency: str,
                    conversion_rate: float, initial_balance: float = 10000.0, spread: float = 0.0,
@@ -49,7 +55,7 @@ def create_session(symbol: str, start: datetime, end: datetime, profile: str | N
         raise ValueError("unknown symbol")
     symbol = metadata["symbol"]
     data_version = metadata.get("data_version")
-    start, end = start.astimezone(timezone.utc), end.astimezone(timezone.utc)
+    start, end = _as_utc(start, "start"), _as_utc(end, "end")
     # Validate through the lazy reader's partition counts: an invalid or empty
     # range is rejected without materializing any bars.
     if len(RangeBars(symbol, start, end, data_version)) == 0:

@@ -47,6 +47,7 @@ def test_session_listing_and_delete_lifecycle(client):
     assert summary["symbol"] == "EURUSD"
     assert summary["status"] == "active"
     assert summary["current_index"] == -1
+    assert summary["updated_at"].endswith("+00:00")
 
     deleted = client.delete(f"/api/replay/sessions/{session_id}")
     assert deleted.status_code == 200
@@ -247,6 +248,22 @@ def test_malformed_session_requests_are_rejected(client):
             field: -1 if field != "conversion_rate" else 0,
         }
         assert client.post("/api/replay/sessions", json=body).status_code == 422, field
+
+
+def test_session_requires_explicit_timezone(client):
+    response = client.post("/api/replay/sessions", json={
+        "symbol": "EURUSD", "start": "2026-01-02T17:00:00", "end": "2026-01-02T17:06:00",
+    })
+    assert response.status_code == 400
+    assert response.json()["detail"] == "start must include an explicit UTC offset"
+
+
+def test_session_normalizes_explicit_offset_to_utc(client):
+    created = create_session(
+        client, start="2026-01-02T12:00:00-05:00", end="2026-01-02T12:06:00-05:00",
+    )
+    assert created["start"] == "2026-01-02T17:00:00+00:00"
+    assert created["end"] == "2026-01-02T17:06:00+00:00"
 
 
 def test_unknown_session_is_404_everywhere(client):

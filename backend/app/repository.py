@@ -4,7 +4,7 @@ import json
 import sqlite3
 from collections import OrderedDict
 from dataclasses import fields
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import DB_PATH, ensure_directories
@@ -124,7 +124,7 @@ def save_session(state: ReplayState, event_type: str, payload: dict[str, object]
     """
     from uuid import uuid4
 
-    now = datetime.now().astimezone().isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     tracked = _PERSISTED_ROWS.get(state.id)
     tracked_revision = tracked[0] if tracked is not None else None
     tracked_fill_ids = tracked[1] if tracked is not None and tracked_revision == state.revision else None
