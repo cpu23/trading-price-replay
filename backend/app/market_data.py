@@ -30,6 +30,18 @@ OHLC_COLUMNS = ("open", "high", "low", "close")
 _BARS_CACHE: OrderedDict[tuple, list[Bar]] = OrderedDict()
 _BARS_CACHE_MAX = 8
 
+# Bounded signature cache: keyed by (symbol, version), holding the partition paths and
+# file signature of one immutable pinned version. Computing a signature is a glob + stat
+# pass over the partition directory, and session state responses recompute it on every
+# call, so caching the scan for immutable versions removes that repeated filesystem work.
+# Only complete (non-empty) pinned versions are cached: a missing version must be
+# rescanned so a later publication is never hidden, and the legacy (unnumbered) dataset
+# is always rescanned so on-disk changes are detected. Entries are a few small tuples, so
+# the cap can exceed the bars caches without meaningful memory cost; the LRU mechanism
+# matches them and the cache is restart-safe (in-memory, recomputed on startup).
+_SIGNATURE_CACHE: OrderedDict[tuple[str, str], tuple[tuple[Path, ...], tuple[tuple[str, int, int], ...]]] = OrderedDict()
+_SIGNATURE_CACHE_MAX = 64
+
 # Lazy replay paging: individual reads are bounded by a page regardless of the
 # selected range, and the per-sequence page cache is capped in bars so long
 # ranges never accumulate in memory. The budget covers the largest legal chart
@@ -45,24 +57,71 @@ def _root_for(symbol: str, version: str | None) -> Path:
     return OHLCV_ROOT / symbol / "versions" / version / "1m"
 
 
-def _signature(symbol: str, version: str | None = None) -> tuple[tuple[str, int, int], ...]:
+def _scan_partitions(symbol: str, version: str | None) -> tuple[tuple[Path, ...], tuple[tuple[str, int, int], ...]]:
+    """One discovery pass over the 1m partitions: their paths plus a file signature.
+
+    The paths are sorted by name, which orders `year=YYYY` partitions chronologically;
+    callers that need newest-first iterate in reverse. The signature covers every
+    partition file, so any re-import (new file, changed size, rewritten mtime) changes it.
+    """
     root = _root_for(symbol, version)
-    paths = sorted(root.glob("year=*/data.parquet"))
-    return tuple((str(path), path.stat().st_mtime_ns, path.stat().st_size) for path in paths)
+    paths = tuple(sorted(root.glob("year=*/data.parquet")))
+    return paths, tuple((str(path), path.stat().st_mtime_ns, path.stat().st_size) for path in paths)
+
+
+def _cached_scan(symbol: str, version: str | None) -> tuple[tuple[Path, ...], tuple[tuple[str, int, int], ...]]:
+    """Partition paths and signature, served from the immutable-version LRU when possible.
+
+    Version directories are immutable once published, so a complete pinned scan is
+    cached and repeated calls (session state responses, bars cache keying) skip the
+    glob/stat pass entirely. A missing or empty version is never cached — its scan is
+    recomputed every time so a later publication is not hidden — and the legacy
+    (unnumbered) dataset is always rescanned so on-disk changes are detected.
+    """
+    if version is None:
+        return _scan_partitions(symbol, None)
+    key = (symbol, version)
+    cached = _SIGNATURE_CACHE.get(key)
+    if cached is not None:
+        _SIGNATURE_CACHE.move_to_end(key)
+        return cached
+    paths, signature = _scan_partitions(symbol, version)
+    if signature:
+        _SIGNATURE_CACHE[key] = (paths, signature)
+        _SIGNATURE_CACHE.move_to_end(key)
+        while len(_SIGNATURE_CACHE) > _SIGNATURE_CACHE_MAX:
+            _SIGNATURE_CACHE.popitem(last=False)
+    return paths, signature
+
+
+def _signature(symbol: str, version: str | None = None) -> tuple[tuple[str, int, int], ...]:
+    return _cached_scan(symbol, version)[1]
 
 
 def bars_signature(symbol: str, version: str | None = None) -> tuple[tuple[str, int, int], ...]:
-    """Signature of the published 1m files for a symbol/version; changes on any re-import."""
+    """Signature of the published 1m files for a symbol/version; changes on any re-import.
+
+    Pinned versions are immutable, so their signature is served from a bounded LRU
+    (see `_SIGNATURE_CACHE`); the legacy dataset and missing versions are always rescanned.
+    """
     return _signature(symbol, version)
 
 
 def invalidate_bars(symbol: str | None = None) -> None:
-    """Drop cached bars; call after publishing a replacement dataset for a symbol."""
+    """Drop cached bars and pinned-version signatures; call after publishing a replacement.
+
+    `None` clears every cache entry; a symbol clears only that symbol's entries. Bars are
+    keyed by file signature, so a changed dataset re-reads even without explicit
+    invalidation; the signature cache is dropped so the next scan observes on-disk state.
+    """
     if symbol is None:
         _BARS_CACHE.clear()
+        _SIGNATURE_CACHE.clear()
         return
     for key in [key for key in _BARS_CACHE if key[0] == symbol]:
         del _BARS_CACHE[key]
+    for key in [key for key in _SIGNATURE_CACHE if key[0] == symbol]:
+        del _SIGNATURE_CACHE[key]
 
 
 def _current_version(symbol: str) -> str | None:
@@ -258,7 +317,9 @@ def load_bars_before(symbol: str, before: datetime, limit: int, version: str | N
     collected, so partitions older than the requested window are never read; the
     returned bars are the last `limit` bars in chronological order. This keeps
     weekends and accepted gaps from erasing available history: the window is a
-    bar count, not a wall-clock span.
+    bar count, not a wall-clock span. Within each partition the lazy query
+    returns only the still-needed tail, so no partition ever materializes more
+    than `limit` rows for conversion.
 
     `version` is the session's pinned dataset version; `None` reads the retained
     legacy dataset explicitly. Results are cached per (symbol, version, before,
@@ -268,24 +329,29 @@ def load_bars_before(symbol: str, before: datetime, limit: int, version: str | N
     before = before.astimezone(timezone.utc)
     if limit <= 0:
         return []
-    signature = _signature(symbol, version)
+    paths, signature = _cached_scan(symbol, version)
     key = (symbol, version, before, limit, signature)
     cached = _BARS_CACHE.get(key)
     if cached is not None:
         _BARS_CACHE.move_to_end(key)
         return cached
-    root = _root_for(symbol, version)
-    paths = sorted(root.glob("year=*/data.parquet"),
-                   key=lambda path: int(path.parent.name.split("=")[1]), reverse=True)
     collected: list[Bar] = []
-    for path in paths:
-        frame = pl.scan_parquet(path).filter(pl.col("timestamp_utc") < before).collect()
+    remaining = limit
+    for path in reversed(paths):  # newest partitions first, so older ones may never be read
+        if remaining <= 0:
+            break
+        # Partitions are published chronologically sorted, so the tail of the
+        # filtered rows is exactly the newest `remaining` bars of this partition;
+        # the lazy query is bounded, so conversion never sees more than the rows
+        # still needed. Cross-year ordering/gaps are preserved because older
+        # partitions only contribute their own tail when the newer ones run short.
+        frame = pl.scan_parquet(path).filter(pl.col("timestamp_utc") < before).tail(remaining).collect()
         if frame.height == 0:
             continue
-        collected.extend(_frame_to_bars(frame))
-        if len(collected) >= limit:
-            break
-    bars = sorted(collected[-limit:], key=lambda bar: bar.timestamp)
+        bars = _frame_to_bars(frame)
+        collected.extend(bars)
+        remaining -= len(bars)
+    bars = sorted(collected, key=lambda bar: bar.timestamp)
     _BARS_CACHE[key] = bars
     _BARS_CACHE.move_to_end(key)
     while len(_BARS_CACHE) > _BARS_CACHE_MAX:
@@ -305,14 +371,12 @@ def load_bars_range(symbol: str, start: datetime, end: datetime, version: str | 
     end = end.astimezone(timezone.utc)
     if end < start:
         return []
-    signature = _signature(symbol, version)
+    paths, signature = _cached_scan(symbol, version)
     key = (symbol, version, start, end, signature)
     cached = _BARS_CACHE.get(key)
     if cached is not None:
         _BARS_CACHE.move_to_end(key)
         return cached
-    root = _root_for(symbol, version)
-    paths = sorted(root.glob("year=*/data.parquet"))
     frames = []
     for path in paths:
         year = int(path.parent.name.split("=")[1])
@@ -336,15 +400,13 @@ def partitions_for_range(symbol: str, version: str | None, start: datetime, end:
     """Year partitions of a pinned version overlapping [start, end], in year order."""
     start = start.astimezone(timezone.utc)
     end = end.astimezone(timezone.utc)
-    root = _root_for(symbol, version)
-    return [
-        (year, path)
-        for year, path in sorted(
-            ((int(path.parent.name.split("=")[1]), path) for path in root.glob("year=*/data.parquet")),
-            key=lambda item: item[0],
-        )
-        if start.year <= year <= end.year
-    ]
+    paths, _ = _cached_scan(symbol, version)
+    result: list[tuple[int, Path]] = []
+    for path in paths:
+        year = int(path.parent.name.split("=")[1])
+        if start.year <= year <= end.year:
+            result.append((year, path))
+    return result
 
 
 def count_bars_partition(path: Path, year: int, start: datetime, end: datetime) -> int:

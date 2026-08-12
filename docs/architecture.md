@@ -20,6 +20,19 @@ Legacy sessions and datasets without a version pointer continue to read the reta
 
 Session snapshots, indicators, trades, fills, order audit rows, and replay events commit in one database transaction. A failed mutation cannot leave an order record without the corresponding authoritative state.
 
+Database schema changes are ordered and versioned. Each migration and its
+version marker commit in one explicit SQLite transaction; an interrupted
+migration rolls back and resumes on the next startup. Databases from a newer
+application version are rejected without modification. Session-owned child
+tables are indexed by session ID for bounded resume and deletion work.
+
+The maintenance command uses SQLite's online backup API, so committed WAL
+frames are included. Backups and restore candidates must pass `PRAGMA
+quick_check`; restore upgrades older supported schemas, creates a validated
+safety backup, checkpoints the stopped live database, and only then installs
+the candidate. SQLite backup does not include the immutable Parquet/raw stores,
+which must be retained separately for a complete workstation recovery.
+
 ## Execution and accounting
 
 Market candles represent midpoint prices. Buys execute above midpoint and sells below midpoint by half the configured full spread plus adverse slippage. Commission is charged per quantity unit on every entry or exit side. Fills retain both reference and execution prices, gross P&L, each cost component, and net P&L.

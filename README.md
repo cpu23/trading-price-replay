@@ -43,7 +43,7 @@ Date,Time,Open,High,Low,Close,TickVolume,Volume,Spread
 - Independent and opposing long/short trades, editable stops and targets, partial exits, and close-all.
 - Configurable spread, slippage, per-side commission, and account balance.
 - Cost-aware fill ledger, realized and unrealized P&L, equity, drawdown, R multiples, and trade statistics.
-- SQLite WAL snapshots, transactional order/event audit records, and immutable market-data versions.
+- Versioned, transactional SQLite schema migrations, WAL snapshots, indexed session history, and immutable market-data versions.
 
 ## Execution model
 
@@ -58,6 +58,29 @@ later in the same candle and their ordering is unknowable, the stop wins
 conservatively.
 
 The API documentation is available at `http://localhost:8000/docs`.
+
+## Database safety
+
+Schema migrations run automatically when the backend starts. A database created
+by a newer application version is rejected rather than modified.
+
+Create a validated online backup while the backend is running:
+
+```bash
+cd backend
+uv run python -m app.maintenance backup ../price-replay-backup.sqlite3
+```
+
+Stop the backend before restoring. Restore validates and upgrades the backup,
+creates a safety backup of the current database, and then replaces it:
+
+```bash
+uv run python -m app.maintenance restore ../price-replay-backup.sqlite3
+```
+
+These commands protect the SQLite session database. A complete workstation
+backup must also preserve `data/raw/` and `data/ohlcv/`, because replay sessions
+pin immutable market-data versions stored there.
 
 ## Dukascopy downloader
 

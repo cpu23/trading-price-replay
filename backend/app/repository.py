@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .config import DB_PATH, ensure_directories
 from .domain import Fill, ReplayState, Trade, serializable, state_snapshot
+from .migrations import migrate
 
 
 class StaleSessionError(Exception):
@@ -44,72 +45,24 @@ def _trade_fingerprint(trade: Trade) -> tuple:
 
 def connect() -> sqlite3.Connection:
     ensure_directories()
-    connection = sqlite3.connect(DB_PATH)
+    connection = sqlite3.connect(DB_PATH, timeout=30.0)
     connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA busy_timeout=30000")
     connection.execute("PRAGMA journal_mode=WAL")
     connection.execute("PRAGMA foreign_keys=ON")
     return connection
 
 
 def initialize() -> None:
+    """Create or upgrade the database schema to the current version.
+
+    All schema work (base tables, additive column migrations, session indexes,
+    profile seeding) is delegated to migrations.migrate(), which is ordered,
+    transactional, and idempotent, so re-running initialization never touches
+    existing data.  A database recorded at a newer schema version is rejected.
+    """
     with connect() as db:
-        db.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS symbols (
-              symbol TEXT PRIMARY KEY, asset_class TEXT NOT NULL, pnl_currency TEXT NOT NULL,
-              price_precision INTEGER NOT NULL, contract_multiplier REAL NOT NULL,
-              default_profile TEXT NOT NULL, first_timestamp TEXT NOT NULL, last_timestamp TEXT NOT NULL,
-              data_version TEXT
-            );
-            CREATE TABLE IF NOT EXISTS import_batches (
-              id TEXT PRIMARY KEY, symbol TEXT NOT NULL, source_path TEXT NOT NULL, schema_id TEXT NOT NULL,
-              status TEXT NOT NULL, rows_imported INTEGER NOT NULL, validation_json TEXT NOT NULL,
-              created_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS replay_sessions (
-              id TEXT PRIMARY KEY, state_json TEXT NOT NULL, updated_at TEXT NOT NULL,
-              revision INTEGER NOT NULL DEFAULT 1
-            );
-            CREATE TABLE IF NOT EXISTS timeframe_profiles (
-              id TEXT PRIMARY KEY, timezone TEXT NOT NULL, session_anchor TEXT, implemented INTEGER NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS session_indicators (
-              session_id TEXT NOT NULL, indicator_id TEXT NOT NULL, PRIMARY KEY(session_id, indicator_id)
-            );
-            CREATE TABLE IF NOT EXISTS orders (
-              id TEXT PRIMARY KEY, session_id TEXT NOT NULL, trade_id TEXT, order_type TEXT NOT NULL,
-              payload_json TEXT NOT NULL, created_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS trades (
-              id TEXT PRIMARY KEY, session_id TEXT NOT NULL, trade_json TEXT NOT NULL, updated_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS fills (
-              id TEXT PRIMARY KEY, session_id TEXT NOT NULL, trade_id TEXT NOT NULL, fill_json TEXT NOT NULL,
-              created_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS replay_events (
-              id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, event_type TEXT NOT NULL,
-              payload_json TEXT NOT NULL, created_at TEXT NOT NULL
-            );
-            """
-        )
-        # Additive migration: legacy databases predate immutable dataset versions.
-        columns = [row["name"] for row in db.execute("PRAGMA table_info(symbols)")]
-        if "data_version" not in columns:
-            db.execute("ALTER TABLE symbols ADD COLUMN data_version TEXT")
-        # Additive migration: legacy databases predate the optimistic-concurrency
-        # revision; existing rows are treated as revision 1 (their first CAS save).
-        columns = [row["name"] for row in db.execute("PRAGMA table_info(replay_sessions)")]
-        if "revision" not in columns:
-            db.execute("ALTER TABLE replay_sessions ADD COLUMN revision INTEGER NOT NULL DEFAULT 1")
-        db.executemany(
-            "INSERT OR IGNORE INTO timeframe_profiles(id,timezone,session_anchor,implemented) VALUES(?,?,?,?)",
-            [
-                ("utc_aligned", "UTC", "00:00", 1),
-                ("new_york_close", "America/New_York", "17:00", 1),
-                ("custom_session_anchor", "configurable", None, 0),
-            ],
-        )
+        migrate(db)
 
 
 def save_session(state: ReplayState, event_type: str, payload: dict[str, object] | None = None,

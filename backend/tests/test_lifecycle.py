@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from app import config, market_data, repository, service
 from app.main import app
+from app.migrations import CURRENT_SCHEMA_VERSION
 
 
 @pytest.fixture()
@@ -33,6 +34,16 @@ def create_session(client, **overrides):
     response = client.post("/api/replay/sessions", json=body)
     assert response.status_code == 200, response.text
     return response.json()
+
+
+def test_health_reports_ready_database_and_schema(client):
+    response = client.get("/api/health")
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "ok",
+        "database": "ok",
+        "schema_version": CURRENT_SCHEMA_VERSION,
+    }
 
 
 def test_session_listing_and_delete_lifecycle(client):

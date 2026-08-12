@@ -12,8 +12,9 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from .market_data import import_file, inspect_path
+from .migrations import CURRENT_SCHEMA_VERSION, read_schema_version
 from .repository import (
-    StaleSessionError, delete_session, get_import_batch, get_symbol, initialize, list_sessions, list_symbols,
+    StaleSessionError, connect, delete_session, get_import_batch, get_symbol, initialize, list_sessions, list_symbols,
     save_session,
 )
 from .service import (
@@ -129,7 +130,26 @@ class PriceRequest(BaseModel):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok"}
+    try:
+        with connect() as db:
+            version = read_schema_version(db)
+            db.execute("SELECT 1 FROM replay_sessions LIMIT 1").fetchone()
+    except Exception as error:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "error", "database": "unavailable", "detail": str(error)},
+        )
+    if version != CURRENT_SCHEMA_VERSION:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "error",
+                "database": "migration_required",
+                "schema_version": version,
+                "expected_schema_version": CURRENT_SCHEMA_VERSION,
+            },
+        )
+    return {"status": "ok", "database": "ok", "schema_version": version}
 
 
 @app.post("/api/imports/inspect-path")

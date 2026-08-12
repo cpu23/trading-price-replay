@@ -19,6 +19,12 @@ def db(tmp_path, monkeypatch):
     initialize()
 
 
+
+def test_connections_configure_writer_contention_timeout(db):
+    with repository.connect() as connection:
+        assert connection.execute("PRAGMA busy_timeout").fetchone()[0] == 30_000
+
+
 def make_state(**overrides) -> ReplayState:
     return ReplayState.create(
         symbol="TEST",

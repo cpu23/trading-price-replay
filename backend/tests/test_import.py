@@ -257,3 +257,203 @@ def test_load_bars_before_returns_last_n_across_gap_and_excludes_future(isolated
     tuesday = datetime(2026, 1, 6, 0, 0, tzinfo=timezone.utc)
     assert len(market_data.load_bars_before("EURUSD", tuesday, 2000, version)) == 530
 
+
+def _spy_frame_conversions(monkeypatch) -> list[int]:
+    """Count rows handed to `_frame_to_bars` per call, in call order."""
+    seen: list[int] = []
+    real = market_data._frame_to_bars
+
+    def spy(frame):
+        seen.append(frame.height)
+        return real(frame)
+
+    monkeypatch.setattr(market_data, "_frame_to_bars", spy)
+    return seen
+
+
+def test_load_bars_before_materializes_at_most_limit_bars_per_partition(isolated, monkeypatch):
+    # 2025: 100 rows, 2026: 300 rows. A limit of 200 must be satisfied by the
+    # newest partition's tail alone, converting at most 200 rows in one call.
+    rows = [_csv_row(datetime(2025, 12, 31, hour, minute, tzinfo=timezone.utc))
+            for hour in range(2) for minute in range(50)]
+    rows += [_csv_row(datetime(2026, 1, 2, hour, minute, tzinfo=timezone.utc))
+             for hour in range(5) for minute in range(60)]
+    version = market_data.import_file(str(write_csv(isolated, "two_years.csv", rows)),
+                                      "EURUSD", "forex", "USD", 5, 1, "utc_aligned")["id"]
+    before = datetime(2026, 1, 3, 0, 0, tzinfo=timezone.utc)
+    seen = _spy_frame_conversions(monkeypatch)
+    bars = market_data.load_bars_before("EURUSD", before, 200, version)
+    assert len(bars) == 200
+    assert seen == [200]  # one partition, exactly the limit, never the full 300
+    assert bars[0].timestamp == datetime(2026, 1, 2, 1, 40, tzinfo=timezone.utc)
+    assert bars[-1].timestamp == datetime(2026, 1, 2, 4, 59, tzinfo=timezone.utc)
+
+
+def test_load_bars_before_tail_spills_across_years_chronologically(isolated, monkeypatch):
+    # 2025: 100 rows, 2026: 60 rows. A limit of 80 takes the whole 2026 partition
+    # and only the remaining 20 rows from the 2025 tail, never a full partition.
+    rows = [_csv_row(datetime(2025, 12, 31, hour, minute, tzinfo=timezone.utc))
+            for hour in range(2) for minute in range(50)]
+    rows += [_csv_row(datetime(2026, 1, 2, hour, minute, tzinfo=timezone.utc))
+             for hour in range(1) for minute in range(60)]
+    version = market_data.import_file(str(write_csv(isolated, "two_years.csv", rows)),
+                                      "EURUSD", "forex", "USD", 5, 1, "utc_aligned")["id"]
+    before = datetime(2026, 1, 3, 0, 0, tzinfo=timezone.utc)
+    seen = _spy_frame_conversions(monkeypatch)
+    bars = market_data.load_bars_before("EURUSD", before, 80, version)
+    assert len(bars) == 80
+    assert seen == [60, 20]  # newest partition first; the older tail is bounded too
+    assert all(rows_seen <= 80 for rows_seen in seen)  # never more than the limit per partition
+    # Chronological order across the year gap (2025-12-31 -> 2026-01-02).
+    assert bars[0].timestamp == datetime(2025, 12, 31, 1, 30, tzinfo=timezone.utc)
+    assert bars[-1].timestamp == datetime(2026, 1, 2, 0, 59, tzinfo=timezone.utc)
+
+
+# ---------------------------------------------------------------------------
+# Immutable-version signature cache: repeated reads of a pinned version must not
+# rediscover partitions (glob + stat), while legacy data, missing versions, and
+# invalidated symbols must always be rescanned.
+# ---------------------------------------------------------------------------
+
+def _counting_scan(monkeypatch) -> dict[str, int]:
+    """Count real partition discovery passes (`_scan_partitions`) through the cache layer."""
+    scans = {"n": 0}
+    real_scan = market_data._scan_partitions
+
+    def spy(symbol, version):
+        scans["n"] += 1
+        return real_scan(symbol, version)
+
+    monkeypatch.setattr(market_data, "_scan_partitions", spy)
+    return scans
+
+
+def test_pinned_version_signature_is_cached_until_invalidated(isolated, monkeypatch):
+    result = market_data.import_file(str(FIXTURE), "EURUSD", "forex", "USD", 5, 1, "utc_aligned")
+    version = result["id"]
+    scans = _counting_scan(monkeypatch)
+    first = market_data.bars_signature("EURUSD", version)
+    assert len(first) == 1  # the fixture spans a single year partition
+    assert scans["n"] == 1
+    assert market_data.bars_signature("EURUSD", version) == first
+    assert scans["n"] == 1  # second call is served from the cache: no rediscovery
+
+
+def test_repeated_pinned_version_reads_perform_no_rescans(isolated, monkeypatch):
+    result = market_data.import_file(str(FIXTURE), "EURUSD", "forex", "USD", 5, 1, "utc_aligned")
+    version = result["id"]
+    start = datetime(2026, 1, 2, 17, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 1, 2, 17, 2, tzinfo=timezone.utc)
+    scans = _counting_scan(monkeypatch)
+    bars = market_data.load_bars_range("EURUSD", start, end, version)
+    assert len(bars) == 3
+    assert scans["n"] == 1  # one discovery pass for the cold read
+    assert market_data.load_bars_range("EURUSD", start, end, version) is bars
+    assert scans["n"] == 1  # warm bars cache hit: still no rediscovery
+    before = datetime(2026, 1, 3, 0, 0, tzinfo=timezone.utc)
+    assert len(market_data.load_bars_before("EURUSD", before, 5, version)) == 5
+    assert scans["n"] == 1  # a different read reuses the cached signature, no rescan
+
+
+def test_invalidate_bars_symbol_only_clears_that_symbol(isolated, monkeypatch):
+    market_data.import_file(str(FIXTURE), "EURUSD", "forex", "USD", 5, 1, "utc_aligned")
+    market_data.import_file(str(FIXTURE), "GBPUSD", "forex", "USD", 5, 1, "utc_aligned")
+    eur_version = repository.get_symbol("EURUSD")["data_version"]
+    gbp_version = repository.get_symbol("GBPUSD")["data_version"]
+    scans = _counting_scan(monkeypatch)
+    market_data.bars_signature("EURUSD", eur_version)
+    market_data.bars_signature("GBPUSD", gbp_version)
+    assert scans["n"] == 2
+    market_data.invalidate_bars("EURUSD")
+    assert market_data.bars_signature("EURUSD", eur_version)  # invalidated: rescanned
+    assert scans["n"] == 3
+    assert market_data.bars_signature("GBPUSD", gbp_version)  # untouched: still cached
+    assert scans["n"] == 3
+
+
+def test_invalidate_bars_none_clears_all_signatures(isolated, monkeypatch):
+    result = market_data.import_file(str(FIXTURE), "EURUSD", "forex", "USD", 5, 1, "utc_aligned")
+    scans = _counting_scan(monkeypatch)
+    market_data.bars_signature("EURUSD", result["id"])
+    market_data.bars_signature("EURUSD", result["id"])
+    assert scans["n"] == 1
+    market_data.invalidate_bars()
+    market_data.bars_signature("EURUSD", result["id"])
+    assert scans["n"] == 2  # global invalidation forces a rescan
+
+
+def test_legacy_dataset_is_never_cached_and_detects_changes(isolated, monkeypatch):
+    legacy_dir = isolated / "ohlcv" / "EURUSD" / "1m" / "year=2026"
+    legacy_dir.mkdir(parents=True)
+
+    def write_legacy(row_count):
+        pl.DataFrame({
+            "timestamp_utc": [datetime(2026, 1, 2, 17, minute, tzinfo=timezone.utc)
+                              for minute in range(row_count)],
+            "open": [1.10] * row_count, "high": [1.11] * row_count, "low": [1.09] * row_count,
+            "close": [1.105] * row_count, "volume": [10.0] * row_count,
+        }).write_parquet(legacy_dir / "data.parquet")
+
+    write_legacy(1)
+    scans = _counting_scan(monkeypatch)
+    start = datetime(2026, 1, 2, 17, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 1, 2, 17, 1, tzinfo=timezone.utc)
+    assert len(market_data.load_bars_range("EURUSD", start, end, None)) == 1
+    assert market_data.bars_signature("EURUSD", None)
+    assert scans["n"] == 2  # legacy scans are never cached: both calls rediscovered
+    write_legacy(2)  # rewrite the legacy parquet with bars at 17:00 and 17:01
+    assert len(market_data.load_bars_range("EURUSD", start, end, None)) == 2
+    assert scans["n"] == 3  # the fresh scan detected the on-disk change
+
+
+def test_invalidated_symbol_detects_on_disk_changes(isolated, monkeypatch):
+    result = market_data.import_file(str(FIXTURE), "EURUSD", "forex", "USD", 5, 1, "utc_aligned")
+    version = result["id"]
+    start = datetime(2026, 1, 2, 17, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 1, 2, 17, 5, tzinfo=timezone.utc)
+    assert len(market_data.load_bars_range("EURUSD", start, end, version)) == 6  # fixture: 17:00-17:06
+    partition = isolated / "ohlcv" / "EURUSD" / "versions" / version / "1m" / "year=2026" / "data.parquet"
+    pl.DataFrame({
+        "timestamp_utc": [datetime(2026, 1, 2, 17, 0, tzinfo=timezone.utc),
+                          datetime(2026, 1, 2, 17, 1, tzinfo=timezone.utc)],
+        "open": [1.10, 1.10], "high": [1.11, 1.11], "low": [1.09, 1.09],
+        "close": [1.105, 1.105], "volume": [10.0, 10.0],
+    }).write_parquet(partition)
+    market_data.invalidate_bars("EURUSD")
+    assert len(market_data.load_bars_range("EURUSD", start, end, version)) == 2  # rescan saw the change
+
+
+def test_missing_pinned_version_is_recomputed_until_published(isolated, monkeypatch):
+    missing = "not-yet-published"
+    scans = _counting_scan(monkeypatch)
+    assert market_data.bars_signature("EURUSD", missing) == ()
+    assert market_data.bars_signature("EURUSD", missing) == ()
+    assert scans["n"] == 2  # an empty signature is never cached: every call rescans
+    version_dir = isolated / "ohlcv" / "EURUSD" / "versions" / missing / "1m" / "year=2026"
+    version_dir.mkdir(parents=True)
+    pl.DataFrame({
+        "timestamp_utc": [datetime(2026, 1, 2, 17, 0, tzinfo=timezone.utc)],
+        "open": [1.10], "high": [1.11], "low": [1.09], "close": [1.105], "volume": [10.0],
+    }).write_parquet(version_dir / "data.parquet")
+    signature = market_data.bars_signature("EURUSD", missing)
+    assert len(signature) == 1  # later publication is not hidden
+    assert scans["n"] == 3
+    assert market_data.bars_signature("EURUSD", missing) == signature
+    assert scans["n"] == 3  # the complete version is now cached
+
+
+def test_signature_cache_is_bounded_lru(isolated, monkeypatch):
+    monkeypatch.setattr(market_data, "_SIGNATURE_CACHE_MAX", 2)
+    versions = []
+    for symbol in ("EURUSD", "GBPUSD", "USDJPY"):
+        result = market_data.import_file(str(FIXTURE), symbol, "forex", "USD", 5, 1, "utc_aligned")
+        versions.append((symbol, result["id"]))
+    for symbol, version in versions:
+        market_data.bars_signature(symbol, version)
+    assert len(market_data._SIGNATURE_CACHE) == 2  # capped
+    first_symbol, first_version = versions[0]
+    scans = _counting_scan(monkeypatch)
+    assert market_data.bars_signature(first_symbol, first_version)  # evicted: rescanned
+    assert scans["n"] == 1
+    assert len(market_data._SIGNATURE_CACHE) == 2  # re-inserted without exceeding the cap
+
