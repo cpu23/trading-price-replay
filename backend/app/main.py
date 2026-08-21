@@ -1,9 +1,9 @@
 from __future__ import annotations
-
+import json
 import math
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -19,7 +19,7 @@ from .repository import (
 )
 from .service import (
     SessionNotFoundError, TradeNotFoundError, close_all_positions, close_position, create_session, get_state,
-    market_order, state_response, step, toggle_indicator, update_settings,
+    market_order, state_response, step, toggle_indicator, update_settings, update_trade_review,
 )
 
 @asynccontextmanager
@@ -128,6 +128,248 @@ class PriceRequest(BaseModel):
     price: float | None = Field(None, allow_inf_nan=False)
 
 
+class ReviewRequest(BaseModel):
+    session_id: str
+    review_note: str = Field("", max_length=5000)
+    review_tags: list[Annotated[str, Field(max_length=64)]] = Field(default_factory=list)
+
+
+# --- Response models ---------------------------------------------------------
+# The FastAPI/OpenAPI contract is the single source of truth for the wire
+# format: the frontend's API types are generated from this schema, so every
+# response the API can produce is described here and validated on the way out.
+
+
+class IndicatorPoint(BaseModel):
+    time: str
+    value: float
+
+
+class DisplayBar(BaseModel):
+    timestamp: str
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+    timeframe: str
+    is_partial: bool
+    source_1m_start_time: str | None
+    source_1m_end_time: str | None
+
+
+class Trade(BaseModel):
+    id: str
+    session_id: str
+    direction: Literal["long", "short"]
+    initial_quantity: float
+    remaining_quantity: float
+    entry_time: str
+    entry_price: float
+    stop_price: float | None
+    target_price: float | None
+    initial_risk: float | None
+    realized_pnl: float
+    status: Literal["open", "closed"]
+    entry_market_price: float | None
+    exit_market_price: float | None
+    exit_price: float | None
+    exit_time: str | None
+    # Null while the trade is still open; "legacy" for closed trades persisted
+    # before execution precision existed.
+    exit_time_precision: Literal["exact", "bar_interval", "legacy"] | None
+    exit_window_start: str | None
+    exit_window_end: str | None
+    final_exit_reason: str | None
+    mfe_gross_pnl: float | None
+    mae_gross_pnl: float | None
+    total_commission: float
+    total_spread_cost: float
+    total_slippage_cost: float
+    # User review, hydrated from the trade_reviews table by the service.
+    review_note: str = ""
+    review_tags: list[str] = Field(default_factory=list)
+
+
+class Fill(BaseModel):
+    id: str
+    trade_id: str
+    session_id: str
+    timestamp: str
+    price: float
+    quantity: float
+    reason: str
+    pnl: float
+    market_price: float | None
+    gross_pnl: float
+    commission: float
+    spread_cost: float
+    slippage_cost: float
+    # "legacy" normalizes fills persisted before execution precision existed.
+    time_precision: Literal["exact", "bar_interval", "legacy"]
+    execution_window_start: str | None
+    execution_window_end: str | None
+
+
+class StatsAccumulator(BaseModel):
+    trades_opened: int = 0
+    trades_completed: int = 0
+    winning_trades: int = 0
+    losing_trades: int = 0
+    winning_pnl_sum: float = 0.0
+    losing_pnl_sum: float = 0.0
+    gross_pnl_sum: float = 0.0
+    net_pnl_sum: float = 0.0
+    commission_sum: float = 0.0
+    spread_cost_sum: float = 0.0
+    slippage_cost_sum: float = 0.0
+    long_pnl_sum: float = 0.0
+    short_pnl_sum: float = 0.0
+    peak_realized_balance: float | None = None
+    max_realized_drawdown: float = 0.0
+    holding_seconds_sum: float = 0.0
+    r_values: list[float] = Field(default_factory=list)
+
+
+class SessionStats(BaseModel):
+    trades_opened: int
+    trades_completed: int
+    win_rate: float
+    net_pnl: float
+    gross_pnl: float
+    trading_costs: float
+    commission_paid: float
+    spread_cost: float
+    slippage_cost: float
+    unrealized_pnl: float
+    balance: float
+    equity: float
+    total_r: float
+    average_r: float
+    median_r: float
+    average_win_r: float
+    average_losing_r: float
+    average_win: float
+    average_loss: float
+    profit_factor: float
+    max_drawdown: float
+    long_pnl: float
+    short_pnl: float
+    average_holding_seconds: float
+
+
+class StateResponse(BaseModel):
+    id: str
+    symbol: str
+    start: str
+    end: str
+    profile: str
+    visible_timeframe: str
+    advance_step_minutes: int
+    chart_context_1m_bars: int
+    indicator_warmup_margin: int
+    current_index: int
+    account_currency: str
+    conversion_rate: float
+    enabled_indicators: list[str]
+    status: Literal["active", "completed"]
+    initial_balance: float
+    spread: float
+    slippage: float
+    commission_per_quantity: float
+    contract_multiplier: float | None
+    data_version: str | None
+    price_precision: int | None
+    pnl_currency: str | None
+    revision: int | None
+    accumulator: StatsAccumulator
+    trades: list[Trade]
+    fills: list[Fill]
+    closed_trades_total: int
+    fills_total: int
+    closed_trades_truncated: bool
+    fills_truncated: bool
+    # Revealed causal market time (latest revealed candle's close time); the
+    # underlying candle's opening time is exposed separately.
+    current_market_time: str | None
+    current_candle_time: str | None
+    current_price: float | None
+    displayed_bars: list[DisplayBar]
+    indicators: dict[str, list[IndicatorPoint]]
+    warnings: list[str]
+    stats: SessionStats
+    remaining_bars: int
+
+
+class SessionSummary(BaseModel):
+    id: str
+    symbol: str
+    start: str
+    end: str
+    status: str
+    current_index: int
+    updated_at: str
+
+
+class DeleteResponse(BaseModel):
+    id: str
+    deleted: bool
+
+
+class SymbolMetadata(BaseModel):
+    symbol: str
+    asset_class: str
+    pnl_currency: str
+    price_precision: int
+    contract_multiplier: float
+    default_profile: str
+    first_timestamp: str
+    last_timestamp: str
+    data_version: str
+
+
+class SymbolRange(BaseModel):
+    symbol: str
+    start: str
+    end: str
+
+
+class TimeframeProfile(BaseModel):
+    id: str
+    implemented: bool
+    default: bool | None = None
+    timezone: str | None = None
+    anchor: str | None = None
+
+
+class InspectPathResponse(BaseModel):
+    kind: str
+    files: list[str]
+
+
+class ImportValidation(BaseModel):
+    duplicates: int = 0
+    subminute: int = 0
+    invalid_ohlc: int = 0
+    invalid_numeric: int = 0
+    invalid_volume: int = 0
+    invalid_timestamps: int = 0
+    gap_count: int = 0
+    source_non_monotonic: bool = False
+
+
+class ImportBatch(BaseModel):
+    id: str
+    symbol: str
+    source_path: str
+    schema_id: str
+    status: str
+    rows_imported: int
+    validation_json: str | None = None
+    created_at: str
+    validation: ImportValidation | None = None
+
+
 @app.get("/api/health")
 def health():
     try:
@@ -152,27 +394,31 @@ def health():
     return {"status": "ok", "database": "ok", "schema_version": version}
 
 
-@app.post("/api/imports/inspect-path")
+@app.post("/api/imports/inspect-path", response_model=InspectPathResponse)
 def inspect(request: PathRequest):
     return attempt(inspect_path, request.path)
 
 
-@app.post("/api/imports")
+@app.post("/api/imports", response_model=ImportBatch)
 def create_import(request: ImportRequest):
     return attempt(import_file, **request.model_dump())
 
 
-@app.get("/api/imports/{batch_id}")
+@app.get("/api/imports/{batch_id}", response_model=ImportBatch)
 def import_status(batch_id: str):
-    return get_import_batch(batch_id) or (_ for _ in ()).throw(HTTPException(404, "unknown import"))
+    batch = get_import_batch(batch_id) or (_ for _ in ()).throw(HTTPException(404, "unknown import"))
+    value = dict(batch)
+    raw = value.get("validation_json")
+    value["validation"] = json.loads(raw) if raw else None
+    return value
 
 
-@app.get("/api/symbols")
+@app.get("/api/symbols", response_model=list[SymbolMetadata])
 def symbols():
     return list_symbols()
 
 
-@app.get("/api/symbols/{symbol}/ranges")
+@app.get("/api/symbols/{symbol}/ranges", response_model=SymbolRange)
 def ranges(symbol: str):
     metadata = get_symbol(symbol)
     if not metadata:
@@ -180,7 +426,7 @@ def ranges(symbol: str):
     return {"symbol": symbol, "start": metadata["first_timestamp"], "end": metadata["last_timestamp"]}
 
 
-@app.get("/api/timeframe-profiles")
+@app.get("/api/timeframe-profiles", response_model=list[TimeframeProfile])
 def profiles():
     return [
         {"id": "utc_aligned", "implemented": True, "default": True},
@@ -189,54 +435,54 @@ def profiles():
     ]
 
 
-@app.post("/api/replay/sessions")
+@app.post("/api/replay/sessions", response_model=StateResponse)
 def sessions(request: SessionRequest):
     return attempt(create_session, **request.model_dump())
 
 
-@app.get("/api/replay/sessions")
+@app.get("/api/replay/sessions", response_model=list[SessionSummary])
 def session_list():
     return list_sessions()
 
 
-@app.delete("/api/replay/sessions/{session_id}")
+@app.delete("/api/replay/sessions/{session_id}", response_model=DeleteResponse)
 def session_delete(session_id: str):
     if not delete_session(session_id):
         raise HTTPException(404, "unknown session")
     return {"id": session_id, "deleted": True}
 
 
-@app.get("/api/replay/sessions/{session_id}/state")
+@app.get("/api/replay/sessions/{session_id}/state", response_model=StateResponse)
 def session_state(session_id: str):
     return attempt(state_response, load_state(session_id))
 
 
-@app.post("/api/replay/sessions/{session_id}/step")
+@app.post("/api/replay/sessions/{session_id}/step", response_model=StateResponse)
 def session_step(session_id: str):
     return attempt(step, load_state(session_id))
 
 
-@app.post("/api/replay/sessions/{session_id}/close-all")
+@app.post("/api/replay/sessions/{session_id}/close-all", response_model=StateResponse)
 def session_close_all(session_id: str):
     return attempt(close_all_positions, load_state(session_id))
 
 
-@app.patch("/api/replay/sessions/{session_id}/settings")
+@app.patch("/api/replay/sessions/{session_id}/settings", response_model=StateResponse)
 def settings(session_id: str, request: SettingsRequest):
     return attempt(update_settings, load_state(session_id), **request.model_dump())
 
 
-@app.post("/api/replay/sessions/{session_id}/indicators/{indicator_id}/toggle")
+@app.post("/api/replay/sessions/{session_id}/indicators/{indicator_id}/toggle", response_model=StateResponse)
 def indicators(session_id: str, indicator_id: str):
     return attempt(toggle_indicator, load_state(session_id), indicator_id)
 
 
-@app.post("/api/replay/sessions/{session_id}/orders/market")
+@app.post("/api/replay/sessions/{session_id}/orders/market", response_model=StateResponse)
 def orders(session_id: str, request: MarketOrderRequest):
     return attempt(market_order, load_state(session_id), **request.model_dump())
 
 
-@app.post("/api/trades/{trade_id}/close")
+@app.post("/api/trades/{trade_id}/close", response_model=StateResponse)
 def close(trade_id: str, request: CloseRequest):
     return attempt(close_position, load_state(request.session_id), trade_id, request.quantity)
 
@@ -283,6 +529,13 @@ def target(trade_id: str, request: PriceRequest):
     return state_response(state)
 
 
-@app.get("/api/replay/sessions/{session_id}/stats")
+@app.patch("/api/trades/{trade_id}/review", response_model=StateResponse)
+def review(trade_id: str, request: ReviewRequest):
+    """Persist the user review (note + tags) for one session trade."""
+    return attempt(update_trade_review, load_state(request.session_id), trade_id,
+                   request.review_note, request.review_tags)
+
+
+@app.get("/api/replay/sessions/{session_id}/stats", response_model=SessionStats)
 def stats(session_id: str):
     return state_response(load_state(session_id))["stats"]

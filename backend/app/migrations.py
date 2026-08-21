@@ -12,6 +12,17 @@ Version history
     per-session lookup and cascade-style deletion are indexed.  The
     session_indicators composite primary key already prefixes session_id, so it
     needs no separate index.
+5.  Additive: normalized ``trades.status`` (backfilled from each row's
+    ``trade_json``) with a ``(session_id, status)`` index so routine hydration
+    loads only open trades by SQL filter, plus the ``trade_reviews`` table
+    (user notes/tags per trade) and its ``session_id`` index.
+6.  Data: one-time backfill of the persisted incremental statistics
+    accumulator into each session's ``state_json``, reconstructed exactly from
+    the normalized trade/fill tables (or the legacy embedded snapshot when the
+    tables are empty).  Sessions whose normalized tables are non-empty also
+    have the now-redundant embedded ``trades``/``fills`` arrays dropped from
+    ``state_json`` so the snapshot stays bounded.  Idempotent: sessions whose
+    snapshot already carries an accumulator are skipped.
 
 Version metadata is stored in a ``schema_meta`` key/value table.  Databases
 that predate the metadata (or were created without it) are baselined from their
@@ -29,7 +40,7 @@ from __future__ import annotations
 
 import sqlite3
 
-CURRENT_SCHEMA_VERSION = 4
+CURRENT_SCHEMA_VERSION = 6
 
 _VERSION_KEY = "schema_version"
 
@@ -199,11 +210,124 @@ def _migrate_v4_session_indexes(connection: sqlite3.Connection) -> None:
         connection.execute(f"CREATE INDEX IF NOT EXISTS {index_name} ON {table}(session_id)")
 
 
+def _migrate_v5_trade_status_and_reviews(connection: sqlite3.Connection) -> None:
+    if not _has_column(connection, "trades", "status"):
+        # New rows default to 'open' (matching a fresh trade); the backfill
+        # below then promotes the closed ones from their authoritative JSON.
+        connection.execute("ALTER TABLE trades ADD COLUMN status TEXT NOT NULL DEFAULT 'open'")
+    # Backfill from trade_json: only the accepted values are honored, anything
+    # else (missing or malformed) stays 'open', the safe default for a row
+    # whose status cannot be proven. Idempotent: re-running is a no-op.
+    connection.execute(
+        "UPDATE trades SET status='closed' WHERE status='open' AND json_extract(trade_json, '$.status')='closed'"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS ix_trades_session_status ON trades(session_id, status)"
+    )
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS trade_reviews ("
+        "trade_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, note TEXT NOT NULL, "
+        "tags_json TEXT NOT NULL, updated_at TEXT NOT NULL)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS ix_trade_reviews_session_id ON trade_reviews(session_id)"
+    )
+
+
+def _v6_parse_trade(payload: dict) -> "object":
+    from datetime import datetime
+
+    from .domain import Trade
+
+    payload = dict(payload)
+    payload["entry_time"] = datetime.fromisoformat(str(payload["entry_time"]))
+    for name in ("exit_time", "exit_window_start", "exit_window_end"):
+        if payload.get(name) is not None:
+            payload[name] = datetime.fromisoformat(str(payload[name]))
+    return Trade(**payload)
+
+
+def _v6_parse_fill(payload: dict) -> "object":
+    from datetime import datetime
+
+    from .domain import Fill
+
+    payload = dict(payload)
+    payload["timestamp"] = datetime.fromisoformat(str(payload["timestamp"]))
+    for name in ("execution_window_start", "execution_window_end"):
+        if payload.get(name) is not None:
+            payload[name] = datetime.fromisoformat(str(payload[name]))
+    return Fill(**payload)
+
+
+def _migrate_v6_stats_accumulator(connection: sqlite3.Connection) -> None:
+    """One-time exact backfill of the persisted statistics accumulator.
+
+    For every session whose snapshot has no accumulator yet, the normalized
+    trade/fill tables are the source (matching how `load_session` chooses its
+    source); only sessions with empty tables fall back to the legacy embedded
+    snapshot. The reconstruction reuses the same incremental booking functions
+    the live engine uses, in ledger order, so the result is numerically
+    identical to a full-history scan. When the tables are authoritative the
+    redundant embedded ``trades``/``fills`` arrays are dropped from
+    ``state_json`` so the snapshot stays bounded.
+    """
+    import json
+    from dataclasses import asdict
+    from datetime import datetime
+
+    from .domain import ReplayState
+    from .stats import build_accumulator_from_history
+
+    for row in connection.execute("SELECT id, state_json FROM replay_sessions"):
+        session_id = row[0]
+        try:
+            value = json.loads(row[1])
+            if not isinstance(value, dict) or "accumulator" in value:
+                continue
+            trade_rows = connection.execute(
+                "SELECT trade_json FROM trades WHERE session_id=? ORDER BY rowid", (session_id,)
+            ).fetchall()
+            fill_rows = connection.execute(
+                "SELECT fill_json FROM fills WHERE session_id=? ORDER BY rowid", (session_id,)
+            ).fetchall()
+            if trade_rows or fill_rows:
+                trades = [_v6_parse_trade(json.loads(item["trade_json"])) for item in trade_rows]
+                fills = [_v6_parse_fill(json.loads(item["fill_json"])) for item in fill_rows]
+                # The normalized tables are authoritative: the embedded copies
+                # in the snapshot are now redundant and would only bloat it.
+                value.pop("trades", None)
+                value.pop("fills", None)
+            else:
+                trades = [_v6_parse_trade(item) for item in (value.get("trades") or [])]
+                fills = [_v6_parse_fill(item) for item in (value.get("fills") or [])]
+            history_value = {
+                key: item for key, item in value.items() if key not in ("trades", "fills", "accumulator")
+            }
+            history_value["start"] = datetime.fromisoformat(str(history_value["start"]))
+            history_value["end"] = datetime.fromisoformat(str(history_value["end"]))
+            state = ReplayState(**history_value)
+            accumulator = build_accumulator_from_history(state, list(trades), list(fills))
+            value["accumulator"] = asdict(accumulator)
+            connection.execute(
+                "UPDATE replay_sessions SET state_json=? WHERE id=?",
+                (json.dumps(value, allow_nan=False), session_id),
+            )
+        except (TypeError, ValueError, KeyError, AttributeError, OverflowError):
+            # A session whose snapshot or ledger rows predate the fields the
+            # reconstruction needs keeps its snapshot untouched; the read path
+            # falls back to a full-history scan for it. One odd session must
+            # never block the backfill of the rest.
+            continue
+
+
 _MIGRATIONS = {
     1: _migrate_v1_base_schema,
     2: _migrate_v2_data_version,
     3: _migrate_v3_revision,
     4: _migrate_v4_session_indexes,
+    5: _migrate_v5_trade_status_and_reviews,
+    6: _migrate_v6_stats_accumulator,
 }
 
 

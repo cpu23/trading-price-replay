@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "./api";
-import { formatAdaptiveNumber, formatNumber, formatPrice } from "./helpers";
+import { formatAdaptiveNumber, formatNumber, formatPrice, utcDateTime } from "./helpers";
 import type { ReplayState, Trade } from "./types";
 
 type TradeRowProps = {
@@ -75,7 +75,7 @@ export function TradeRow({ trade, replay, precision, busy, action }: TradeRowPro
           </div>
           <div>
             <dt>Opened</dt>
-            <dd><time dateTime={trade.entry_time}>{new Date(trade.entry_time).toLocaleString()}</time></dd>
+            <dd><time dateTime={trade.entry_time}>{utcDateTime(trade.entry_time)} UTC</time></dd>
           </div>
           <div>
             <dt>Realized net</dt>

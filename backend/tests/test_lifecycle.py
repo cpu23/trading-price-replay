@@ -332,7 +332,11 @@ def test_displayed_bars_stay_bounded_as_replay_advances(client, tmp_path):
         assert len(state["displayed_bars"]) <= 500
     assert state["status"] == "completed"
     assert len(state["displayed_bars"]) <= 500
-    assert state["displayed_bars"][-1]["timestamp"] == state["current_market_time"]
+    # The displayed candle's timestamp is its opening time; the market clock
+    # shows the reveal time (opening + 1m), exposed as current_candle_time vs
+    # current_market_time.
+    assert state["displayed_bars"][-1]["timestamp"] == state["current_candle_time"]
+    assert state["current_market_time"] > state["current_candle_time"]
 
 
 def test_session_replays_pinned_version_after_reimport(client, tmp_path):
@@ -340,7 +344,7 @@ def test_session_replays_pinned_version_after_reimport(client, tmp_path):
     for _ in range(4):
         assert client.post(f"/api/replay/sessions/{session_id}/step").status_code == 200
     state = client.get(f"/api/replay/sessions/{session_id}/state").json()
-    assert state["current_market_time"].endswith("17:03:00+00:00")
+    assert state["current_market_time"].endswith("17:04:00+00:00")
     pinned_version = state["data_version"]
     assert pinned_version
     # Re-import the same symbol with the 17:03 bar removed.
@@ -359,7 +363,7 @@ def test_session_replays_pinned_version_after_reimport(client, tmp_path):
     # The existing session keeps stepping the pinned version: next bar is 17:04
     # (a re-based session would skip to 17:05) and the tail still holds two bars.
     stepped = client.post(f"/api/replay/sessions/{session_id}/step").json()
-    assert stepped["current_market_time"].endswith("17:04:00+00:00")
+    assert stepped["current_market_time"].endswith("17:05:00+00:00")
     assert stepped["remaining_bars"] == 2
     # A fresh session pins the newly published version and skips the removed minute.
     fresh = create_session(client, start="2026-01-02T17:00:00Z", end="2026-01-02T17:06:00Z")
@@ -368,7 +372,7 @@ def test_session_replays_pinned_version_after_reimport(client, tmp_path):
     for _ in range(4):
         assert client.post(f"/api/replay/sessions/{fresh_id}/step").status_code == 200
     fresh_state = client.get(f"/api/replay/sessions/{fresh_id}/state").json()
-    assert fresh_state["current_market_time"].endswith("17:04:00+00:00")
+    assert fresh_state["current_market_time"].endswith("17:05:00+00:00")
 
 
 def test_extreme_numeric_inputs_are_rejected(client):
@@ -476,4 +480,5 @@ def test_weekend_gap_keeps_full_context_window(client, tmp_path):
     ]
     # Indicator warmup stays causal across the gap: SMA over the Friday context only.
     stepped = client.post(f"/api/replay/sessions/{session_id}/step").json()
-    assert stepped["current_market_time"] == "2026-01-05T00:00:00+00:00"
+    assert stepped["current_market_time"] == "2026-01-05T00:01:00+00:00"
+    assert stepped["current_candle_time"] == "2026-01-05T00:00:00+00:00"

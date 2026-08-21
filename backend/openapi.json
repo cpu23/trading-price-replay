@@ -1,0 +1,2466 @@
+{
+  "components": {
+    "schemas": {
+      "CloseRequest": {
+        "properties": {
+          "quantity": {
+            "exclusiveMinimum": 0.0,
+            "title": "Quantity",
+            "type": "number"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "quantity"
+        ],
+        "title": "CloseRequest",
+        "type": "object"
+      },
+      "DeleteResponse": {
+        "properties": {
+          "deleted": {
+            "title": "Deleted",
+            "type": "boolean"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "deleted"
+        ],
+        "title": "DeleteResponse",
+        "type": "object"
+      },
+      "DisplayBar": {
+        "properties": {
+          "close": {
+            "title": "Close",
+            "type": "number"
+          },
+          "high": {
+            "title": "High",
+            "type": "number"
+          },
+          "is_partial": {
+            "title": "Is Partial",
+            "type": "boolean"
+          },
+          "low": {
+            "title": "Low",
+            "type": "number"
+          },
+          "open": {
+            "title": "Open",
+            "type": "number"
+          },
+          "source_1m_end_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source 1M End Time"
+          },
+          "source_1m_start_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source 1M Start Time"
+          },
+          "timeframe": {
+            "title": "Timeframe",
+            "type": "string"
+          },
+          "timestamp": {
+            "title": "Timestamp",
+            "type": "string"
+          },
+          "volume": {
+            "title": "Volume",
+            "type": "number"
+          }
+        },
+        "required": [
+          "timestamp",
+          "open",
+          "high",
+          "low",
+          "close",
+          "volume",
+          "timeframe",
+          "is_partial",
+          "source_1m_start_time",
+          "source_1m_end_time"
+        ],
+        "title": "DisplayBar",
+        "type": "object"
+      },
+      "Fill": {
+        "properties": {
+          "commission": {
+            "title": "Commission",
+            "type": "number"
+          },
+          "execution_window_end": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Execution Window End"
+          },
+          "execution_window_start": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Execution Window Start"
+          },
+          "gross_pnl": {
+            "title": "Gross Pnl",
+            "type": "number"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "market_price": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Market Price"
+          },
+          "pnl": {
+            "title": "Pnl",
+            "type": "number"
+          },
+          "price": {
+            "title": "Price",
+            "type": "number"
+          },
+          "quantity": {
+            "title": "Quantity",
+            "type": "number"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "slippage_cost": {
+            "title": "Slippage Cost",
+            "type": "number"
+          },
+          "spread_cost": {
+            "title": "Spread Cost",
+            "type": "number"
+          },
+          "time_precision": {
+            "enum": [
+              "exact",
+              "bar_interval",
+              "legacy"
+            ],
+            "title": "Time Precision",
+            "type": "string"
+          },
+          "timestamp": {
+            "title": "Timestamp",
+            "type": "string"
+          },
+          "trade_id": {
+            "title": "Trade Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "trade_id",
+          "session_id",
+          "timestamp",
+          "price",
+          "quantity",
+          "reason",
+          "pnl",
+          "market_price",
+          "gross_pnl",
+          "commission",
+          "spread_cost",
+          "slippage_cost",
+          "time_precision",
+          "execution_window_start",
+          "execution_window_end"
+        ],
+        "title": "Fill",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "ImportBatch": {
+        "properties": {
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "rows_imported": {
+            "title": "Rows Imported",
+            "type": "integer"
+          },
+          "schema_id": {
+            "title": "Schema Id",
+            "type": "string"
+          },
+          "source_path": {
+            "title": "Source Path",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "symbol": {
+            "title": "Symbol",
+            "type": "string"
+          },
+          "validation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImportValidation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "validation_json": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Validation Json"
+          }
+        },
+        "required": [
+          "id",
+          "symbol",
+          "source_path",
+          "schema_id",
+          "status",
+          "rows_imported",
+          "created_at"
+        ],
+        "title": "ImportBatch",
+        "type": "object"
+      },
+      "ImportRequest": {
+        "properties": {
+          "asset_class": {
+            "default": "forex",
+            "minLength": 1,
+            "title": "Asset Class",
+            "type": "string"
+          },
+          "contract_multiplier": {
+            "default": 1.0,
+            "exclusiveMinimum": 0.0,
+            "title": "Contract Multiplier",
+            "type": "number"
+          },
+          "default_profile": {
+            "default": "utc_aligned",
+            "enum": [
+              "utc_aligned",
+              "new_york_close"
+            ],
+            "title": "Default Profile",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "pnl_currency": {
+            "default": "USD",
+            "minLength": 1,
+            "title": "Pnl Currency",
+            "type": "string"
+          },
+          "price_precision": {
+            "default": 5,
+            "minimum": 0.0,
+            "title": "Price Precision",
+            "type": "integer"
+          },
+          "symbol": {
+            "pattern": "^[A-Za-z0-9._-]+$",
+            "title": "Symbol",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "symbol"
+        ],
+        "title": "ImportRequest",
+        "type": "object"
+      },
+      "ImportValidation": {
+        "properties": {
+          "duplicates": {
+            "default": 0,
+            "title": "Duplicates",
+            "type": "integer"
+          },
+          "gap_count": {
+            "default": 0,
+            "title": "Gap Count",
+            "type": "integer"
+          },
+          "invalid_numeric": {
+            "default": 0,
+            "title": "Invalid Numeric",
+            "type": "integer"
+          },
+          "invalid_ohlc": {
+            "default": 0,
+            "title": "Invalid Ohlc",
+            "type": "integer"
+          },
+          "invalid_timestamps": {
+            "default": 0,
+            "title": "Invalid Timestamps",
+            "type": "integer"
+          },
+          "invalid_volume": {
+            "default": 0,
+            "title": "Invalid Volume",
+            "type": "integer"
+          },
+          "source_non_monotonic": {
+            "default": false,
+            "title": "Source Non Monotonic",
+            "type": "boolean"
+          },
+          "subminute": {
+            "default": 0,
+            "title": "Subminute",
+            "type": "integer"
+          }
+        },
+        "title": "ImportValidation",
+        "type": "object"
+      },
+      "IndicatorPoint": {
+        "properties": {
+          "time": {
+            "title": "Time",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "number"
+          }
+        },
+        "required": [
+          "time",
+          "value"
+        ],
+        "title": "IndicatorPoint",
+        "type": "object"
+      },
+      "InspectPathResponse": {
+        "properties": {
+          "files": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Files",
+            "type": "array"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "files"
+        ],
+        "title": "InspectPathResponse",
+        "type": "object"
+      },
+      "MarketOrderRequest": {
+        "properties": {
+          "direction": {
+            "enum": [
+              "long",
+              "short"
+            ],
+            "title": "Direction",
+            "type": "string"
+          },
+          "quantity": {
+            "exclusiveMinimum": 0.0,
+            "title": "Quantity",
+            "type": "number"
+          },
+          "stop_price": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stop Price"
+          },
+          "target_price": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Price"
+          }
+        },
+        "required": [
+          "direction",
+          "quantity"
+        ],
+        "title": "MarketOrderRequest",
+        "type": "object"
+      },
+      "PathRequest": {
+        "properties": {
+          "path": {
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "title": "PathRequest",
+        "type": "object"
+      },
+      "PriceRequest": {
+        "properties": {
+          "price": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "PriceRequest",
+        "type": "object"
+      },
+      "ReviewRequest": {
+        "properties": {
+          "review_note": {
+            "default": "",
+            "maxLength": 5000,
+            "title": "Review Note",
+            "type": "string"
+          },
+          "review_tags": {
+            "items": {
+              "maxLength": 64,
+              "type": "string"
+            },
+            "title": "Review Tags",
+            "type": "array"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "ReviewRequest",
+        "type": "object"
+      },
+      "SessionRequest": {
+        "properties": {
+          "account_currency": {
+            "default": "USD",
+            "title": "Account Currency",
+            "type": "string"
+          },
+          "advance_step_minutes": {
+            "default": 1,
+            "minimum": 1.0,
+            "title": "Advance Step Minutes",
+            "type": "integer"
+          },
+          "chart_context_1m_bars": {
+            "default": 1000,
+            "maximum": 2000.0,
+            "minimum": 500.0,
+            "title": "Chart Context 1M Bars",
+            "type": "integer"
+          },
+          "commission_per_quantity": {
+            "default": 0.0,
+            "minimum": 0.0,
+            "title": "Commission Per Quantity",
+            "type": "number"
+          },
+          "conversion_rate": {
+            "default": 1.0,
+            "exclusiveMinimum": 0.0,
+            "title": "Conversion Rate",
+            "type": "number"
+          },
+          "end": {
+            "format": "date-time",
+            "title": "End",
+            "type": "string"
+          },
+          "initial_balance": {
+            "default": 10000.0,
+            "exclusiveMinimum": 0.0,
+            "title": "Initial Balance",
+            "type": "number"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "enum": [
+                  "utc_aligned",
+                  "new_york_close"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile"
+          },
+          "slippage": {
+            "default": 0.0,
+            "minimum": 0.0,
+            "title": "Slippage",
+            "type": "number"
+          },
+          "spread": {
+            "default": 0.0,
+            "minimum": 0.0,
+            "title": "Spread",
+            "type": "number"
+          },
+          "start": {
+            "format": "date-time",
+            "title": "Start",
+            "type": "string"
+          },
+          "symbol": {
+            "title": "Symbol",
+            "type": "string"
+          },
+          "visible_timeframe": {
+            "default": "1m",
+            "enum": [
+              "1m",
+              "5m",
+              "15m",
+              "1h",
+              "4h",
+              "1d"
+            ],
+            "title": "Visible Timeframe",
+            "type": "string"
+          }
+        },
+        "required": [
+          "symbol",
+          "start",
+          "end"
+        ],
+        "title": "SessionRequest",
+        "type": "object"
+      },
+      "SessionStats": {
+        "properties": {
+          "average_holding_seconds": {
+            "title": "Average Holding Seconds",
+            "type": "number"
+          },
+          "average_losing_r": {
+            "title": "Average Losing R",
+            "type": "number"
+          },
+          "average_loss": {
+            "title": "Average Loss",
+            "type": "number"
+          },
+          "average_r": {
+            "title": "Average R",
+            "type": "number"
+          },
+          "average_win": {
+            "title": "Average Win",
+            "type": "number"
+          },
+          "average_win_r": {
+            "title": "Average Win R",
+            "type": "number"
+          },
+          "balance": {
+            "title": "Balance",
+            "type": "number"
+          },
+          "commission_paid": {
+            "title": "Commission Paid",
+            "type": "number"
+          },
+          "equity": {
+            "title": "Equity",
+            "type": "number"
+          },
+          "gross_pnl": {
+            "title": "Gross Pnl",
+            "type": "number"
+          },
+          "long_pnl": {
+            "title": "Long Pnl",
+            "type": "number"
+          },
+          "max_drawdown": {
+            "title": "Max Drawdown",
+            "type": "number"
+          },
+          "median_r": {
+            "title": "Median R",
+            "type": "number"
+          },
+          "net_pnl": {
+            "title": "Net Pnl",
+            "type": "number"
+          },
+          "profit_factor": {
+            "title": "Profit Factor",
+            "type": "number"
+          },
+          "short_pnl": {
+            "title": "Short Pnl",
+            "type": "number"
+          },
+          "slippage_cost": {
+            "title": "Slippage Cost",
+            "type": "number"
+          },
+          "spread_cost": {
+            "title": "Spread Cost",
+            "type": "number"
+          },
+          "total_r": {
+            "title": "Total R",
+            "type": "number"
+          },
+          "trades_completed": {
+            "title": "Trades Completed",
+            "type": "integer"
+          },
+          "trades_opened": {
+            "title": "Trades Opened",
+            "type": "integer"
+          },
+          "trading_costs": {
+            "title": "Trading Costs",
+            "type": "number"
+          },
+          "unrealized_pnl": {
+            "title": "Unrealized Pnl",
+            "type": "number"
+          },
+          "win_rate": {
+            "title": "Win Rate",
+            "type": "number"
+          }
+        },
+        "required": [
+          "trades_opened",
+          "trades_completed",
+          "win_rate",
+          "net_pnl",
+          "gross_pnl",
+          "trading_costs",
+          "commission_paid",
+          "spread_cost",
+          "slippage_cost",
+          "unrealized_pnl",
+          "balance",
+          "equity",
+          "total_r",
+          "average_r",
+          "median_r",
+          "average_win_r",
+          "average_losing_r",
+          "average_win",
+          "average_loss",
+          "profit_factor",
+          "max_drawdown",
+          "long_pnl",
+          "short_pnl",
+          "average_holding_seconds"
+        ],
+        "title": "SessionStats",
+        "type": "object"
+      },
+      "SessionSummary": {
+        "properties": {
+          "current_index": {
+            "title": "Current Index",
+            "type": "integer"
+          },
+          "end": {
+            "title": "End",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "start": {
+            "title": "Start",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "symbol": {
+            "title": "Symbol",
+            "type": "string"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "symbol",
+          "start",
+          "end",
+          "status",
+          "current_index",
+          "updated_at"
+        ],
+        "title": "SessionSummary",
+        "type": "object"
+      },
+      "SettingsRequest": {
+        "properties": {
+          "advance_step_minutes": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Advance Step Minutes"
+          },
+          "visible_timeframe": {
+            "anyOf": [
+              {
+                "enum": [
+                  "1m",
+                  "5m",
+                  "15m",
+                  "1h",
+                  "4h",
+                  "1d"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Visible Timeframe"
+          }
+        },
+        "title": "SettingsRequest",
+        "type": "object"
+      },
+      "StateResponse": {
+        "properties": {
+          "account_currency": {
+            "title": "Account Currency",
+            "type": "string"
+          },
+          "accumulator": {
+            "$ref": "#/components/schemas/StatsAccumulator"
+          },
+          "advance_step_minutes": {
+            "title": "Advance Step Minutes",
+            "type": "integer"
+          },
+          "chart_context_1m_bars": {
+            "title": "Chart Context 1M Bars",
+            "type": "integer"
+          },
+          "closed_trades_total": {
+            "title": "Closed Trades Total",
+            "type": "integer"
+          },
+          "closed_trades_truncated": {
+            "title": "Closed Trades Truncated",
+            "type": "boolean"
+          },
+          "commission_per_quantity": {
+            "title": "Commission Per Quantity",
+            "type": "number"
+          },
+          "contract_multiplier": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Contract Multiplier"
+          },
+          "conversion_rate": {
+            "title": "Conversion Rate",
+            "type": "number"
+          },
+          "current_candle_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Candle Time"
+          },
+          "current_index": {
+            "title": "Current Index",
+            "type": "integer"
+          },
+          "current_market_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Market Time"
+          },
+          "current_price": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Price"
+          },
+          "data_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data Version"
+          },
+          "displayed_bars": {
+            "items": {
+              "$ref": "#/components/schemas/DisplayBar"
+            },
+            "title": "Displayed Bars",
+            "type": "array"
+          },
+          "enabled_indicators": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Enabled Indicators",
+            "type": "array"
+          },
+          "end": {
+            "title": "End",
+            "type": "string"
+          },
+          "fills": {
+            "items": {
+              "$ref": "#/components/schemas/Fill"
+            },
+            "title": "Fills",
+            "type": "array"
+          },
+          "fills_total": {
+            "title": "Fills Total",
+            "type": "integer"
+          },
+          "fills_truncated": {
+            "title": "Fills Truncated",
+            "type": "boolean"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "indicator_warmup_margin": {
+            "title": "Indicator Warmup Margin",
+            "type": "integer"
+          },
+          "indicators": {
+            "additionalProperties": {
+              "items": {
+                "$ref": "#/components/schemas/IndicatorPoint"
+              },
+              "type": "array"
+            },
+            "title": "Indicators",
+            "type": "object"
+          },
+          "initial_balance": {
+            "title": "Initial Balance",
+            "type": "number"
+          },
+          "pnl_currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pnl Currency"
+          },
+          "price_precision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Precision"
+          },
+          "profile": {
+            "title": "Profile",
+            "type": "string"
+          },
+          "remaining_bars": {
+            "title": "Remaining Bars",
+            "type": "integer"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision"
+          },
+          "slippage": {
+            "title": "Slippage",
+            "type": "number"
+          },
+          "spread": {
+            "title": "Spread",
+            "type": "number"
+          },
+          "start": {
+            "title": "Start",
+            "type": "string"
+          },
+          "stats": {
+            "$ref": "#/components/schemas/SessionStats"
+          },
+          "status": {
+            "enum": [
+              "active",
+              "completed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "symbol": {
+            "title": "Symbol",
+            "type": "string"
+          },
+          "trades": {
+            "items": {
+              "$ref": "#/components/schemas/Trade"
+            },
+            "title": "Trades",
+            "type": "array"
+          },
+          "visible_timeframe": {
+            "title": "Visible Timeframe",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "symbol",
+          "start",
+          "end",
+          "profile",
+          "visible_timeframe",
+          "advance_step_minutes",
+          "chart_context_1m_bars",
+          "indicator_warmup_margin",
+          "current_index",
+          "account_currency",
+          "conversion_rate",
+          "enabled_indicators",
+          "status",
+          "initial_balance",
+          "spread",
+          "slippage",
+          "commission_per_quantity",
+          "contract_multiplier",
+          "data_version",
+          "price_precision",
+          "pnl_currency",
+          "revision",
+          "accumulator",
+          "trades",
+          "fills",
+          "closed_trades_total",
+          "fills_total",
+          "closed_trades_truncated",
+          "fills_truncated",
+          "current_market_time",
+          "current_candle_time",
+          "current_price",
+          "displayed_bars",
+          "indicators",
+          "warnings",
+          "stats",
+          "remaining_bars"
+        ],
+        "title": "StateResponse",
+        "type": "object"
+      },
+      "StatsAccumulator": {
+        "properties": {
+          "commission_sum": {
+            "default": 0.0,
+            "title": "Commission Sum",
+            "type": "number"
+          },
+          "gross_pnl_sum": {
+            "default": 0.0,
+            "title": "Gross Pnl Sum",
+            "type": "number"
+          },
+          "holding_seconds_sum": {
+            "default": 0.0,
+            "title": "Holding Seconds Sum",
+            "type": "number"
+          },
+          "long_pnl_sum": {
+            "default": 0.0,
+            "title": "Long Pnl Sum",
+            "type": "number"
+          },
+          "losing_pnl_sum": {
+            "default": 0.0,
+            "title": "Losing Pnl Sum",
+            "type": "number"
+          },
+          "losing_trades": {
+            "default": 0,
+            "title": "Losing Trades",
+            "type": "integer"
+          },
+          "max_realized_drawdown": {
+            "default": 0.0,
+            "title": "Max Realized Drawdown",
+            "type": "number"
+          },
+          "net_pnl_sum": {
+            "default": 0.0,
+            "title": "Net Pnl Sum",
+            "type": "number"
+          },
+          "peak_realized_balance": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Peak Realized Balance"
+          },
+          "r_values": {
+            "items": {
+              "type": "number"
+            },
+            "title": "R Values",
+            "type": "array"
+          },
+          "short_pnl_sum": {
+            "default": 0.0,
+            "title": "Short Pnl Sum",
+            "type": "number"
+          },
+          "slippage_cost_sum": {
+            "default": 0.0,
+            "title": "Slippage Cost Sum",
+            "type": "number"
+          },
+          "spread_cost_sum": {
+            "default": 0.0,
+            "title": "Spread Cost Sum",
+            "type": "number"
+          },
+          "trades_completed": {
+            "default": 0,
+            "title": "Trades Completed",
+            "type": "integer"
+          },
+          "trades_opened": {
+            "default": 0,
+            "title": "Trades Opened",
+            "type": "integer"
+          },
+          "winning_pnl_sum": {
+            "default": 0.0,
+            "title": "Winning Pnl Sum",
+            "type": "number"
+          },
+          "winning_trades": {
+            "default": 0,
+            "title": "Winning Trades",
+            "type": "integer"
+          }
+        },
+        "title": "StatsAccumulator",
+        "type": "object"
+      },
+      "SymbolMetadata": {
+        "properties": {
+          "asset_class": {
+            "title": "Asset Class",
+            "type": "string"
+          },
+          "contract_multiplier": {
+            "title": "Contract Multiplier",
+            "type": "number"
+          },
+          "data_version": {
+            "title": "Data Version",
+            "type": "string"
+          },
+          "default_profile": {
+            "title": "Default Profile",
+            "type": "string"
+          },
+          "first_timestamp": {
+            "title": "First Timestamp",
+            "type": "string"
+          },
+          "last_timestamp": {
+            "title": "Last Timestamp",
+            "type": "string"
+          },
+          "pnl_currency": {
+            "title": "Pnl Currency",
+            "type": "string"
+          },
+          "price_precision": {
+            "title": "Price Precision",
+            "type": "integer"
+          },
+          "symbol": {
+            "title": "Symbol",
+            "type": "string"
+          }
+        },
+        "required": [
+          "symbol",
+          "asset_class",
+          "pnl_currency",
+          "price_precision",
+          "contract_multiplier",
+          "default_profile",
+          "first_timestamp",
+          "last_timestamp",
+          "data_version"
+        ],
+        "title": "SymbolMetadata",
+        "type": "object"
+      },
+      "SymbolRange": {
+        "properties": {
+          "end": {
+            "title": "End",
+            "type": "string"
+          },
+          "start": {
+            "title": "Start",
+            "type": "string"
+          },
+          "symbol": {
+            "title": "Symbol",
+            "type": "string"
+          }
+        },
+        "required": [
+          "symbol",
+          "start",
+          "end"
+        ],
+        "title": "SymbolRange",
+        "type": "object"
+      },
+      "TimeframeProfile": {
+        "properties": {
+          "anchor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Anchor"
+          },
+          "default": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "implemented": {
+            "title": "Implemented",
+            "type": "boolean"
+          },
+          "timezone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timezone"
+          }
+        },
+        "required": [
+          "id",
+          "implemented"
+        ],
+        "title": "TimeframeProfile",
+        "type": "object"
+      },
+      "Trade": {
+        "properties": {
+          "direction": {
+            "enum": [
+              "long",
+              "short"
+            ],
+            "title": "Direction",
+            "type": "string"
+          },
+          "entry_market_price": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entry Market Price"
+          },
+          "entry_price": {
+            "title": "Entry Price",
+            "type": "number"
+          },
+          "entry_time": {
+            "title": "Entry Time",
+            "type": "string"
+          },
+          "exit_market_price": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exit Market Price"
+          },
+          "exit_price": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exit Price"
+          },
+          "exit_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exit Time"
+          },
+          "exit_time_precision": {
+            "anyOf": [
+              {
+                "enum": [
+                  "exact",
+                  "bar_interval",
+                  "legacy"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exit Time Precision"
+          },
+          "exit_window_end": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exit Window End"
+          },
+          "exit_window_start": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exit Window Start"
+          },
+          "final_exit_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Final Exit Reason"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "initial_quantity": {
+            "title": "Initial Quantity",
+            "type": "number"
+          },
+          "initial_risk": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Initial Risk"
+          },
+          "mae_gross_pnl": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mae Gross Pnl"
+          },
+          "mfe_gross_pnl": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mfe Gross Pnl"
+          },
+          "realized_pnl": {
+            "title": "Realized Pnl",
+            "type": "number"
+          },
+          "remaining_quantity": {
+            "title": "Remaining Quantity",
+            "type": "number"
+          },
+          "review_note": {
+            "default": "",
+            "title": "Review Note",
+            "type": "string"
+          },
+          "review_tags": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Review Tags",
+            "type": "array"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "open",
+              "closed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "stop_price": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stop Price"
+          },
+          "target_price": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Price"
+          },
+          "total_commission": {
+            "title": "Total Commission",
+            "type": "number"
+          },
+          "total_slippage_cost": {
+            "title": "Total Slippage Cost",
+            "type": "number"
+          },
+          "total_spread_cost": {
+            "title": "Total Spread Cost",
+            "type": "number"
+          }
+        },
+        "required": [
+          "id",
+          "session_id",
+          "direction",
+          "initial_quantity",
+          "remaining_quantity",
+          "entry_time",
+          "entry_price",
+          "stop_price",
+          "target_price",
+          "initial_risk",
+          "realized_pnl",
+          "status",
+          "entry_market_price",
+          "exit_market_price",
+          "exit_price",
+          "exit_time",
+          "exit_time_precision",
+          "exit_window_start",
+          "exit_window_end",
+          "final_exit_reason",
+          "mfe_gross_pnl",
+          "mae_gross_pnl",
+          "total_commission",
+          "total_spread_cost",
+          "total_slippage_cost"
+        ],
+        "title": "Trade",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "Trading Price Replay",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/health": {
+      "get": {
+        "operationId": "health_api_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Health"
+      }
+    },
+    "/api/imports": {
+      "post": {
+        "operationId": "create_import_api_imports_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportBatch"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Import"
+      }
+    },
+    "/api/imports/inspect-path": {
+      "post": {
+        "operationId": "inspect_api_imports_inspect_path_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PathRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InspectPathResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Inspect"
+      }
+    },
+    "/api/imports/{batch_id}": {
+      "get": {
+        "operationId": "import_status_api_imports__batch_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "batch_id",
+            "required": true,
+            "schema": {
+              "title": "Batch Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportBatch"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Import Status"
+      }
+    },
+    "/api/replay/sessions": {
+      "get": {
+        "operationId": "session_list_api_replay_sessions_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/SessionSummary"
+                  },
+                  "title": "Response Session List Api Replay Sessions Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Session List"
+      },
+      "post": {
+        "operationId": "sessions_api_replay_sessions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StateResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Sessions"
+      }
+    },
+    "/api/replay/sessions/{session_id}": {
+      "delete": {
+        "operationId": "session_delete_api_replay_sessions__session_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Session Delete"
+      }
+    },
+    "/api/replay/sessions/{session_id}/close-all": {
+      "post": {
+        "operationId": "session_close_all_api_replay_sessions__session_id__close_all_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StateResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Session Close All"
+      }
+    },
+    "/api/replay/sessions/{session_id}/indicators/{indicator_id}/toggle": {
+      "post": {
+        "operationId": "indicators_api_replay_sessions__session_id__indicators__indicator_id__toggle_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "indicator_id",
+            "required": true,
+            "schema": {
+              "title": "Indicator Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StateResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Indicators"
+      }
+    },
+    "/api/replay/sessions/{session_id}/orders/market": {
+      "post": {
+        "operationId": "orders_api_replay_sessions__session_id__orders_market_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MarketOrderRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StateResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Orders"
+      }
+    },
+    "/api/replay/sessions/{session_id}/settings": {
+      "patch": {
+        "operationId": "settings_api_replay_sessions__session_id__settings_patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SettingsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StateResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Settings"
+      }
+    },
+    "/api/replay/sessions/{session_id}/state": {
+      "get": {
+        "operationId": "session_state_api_replay_sessions__session_id__state_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StateResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Session State"
+      }
+    },
+    "/api/replay/sessions/{session_id}/stats": {
+      "get": {
+        "operationId": "stats_api_replay_sessions__session_id__stats_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionStats"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stats"
+      }
+    },
+    "/api/replay/sessions/{session_id}/step": {
+      "post": {
+        "operationId": "session_step_api_replay_sessions__session_id__step_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StateResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Session Step"
+      }
+    },
+    "/api/symbols": {
+      "get": {
+        "operationId": "symbols_api_symbols_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/SymbolMetadata"
+                  },
+                  "title": "Response Symbols Api Symbols Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Symbols"
+      }
+    },
+    "/api/symbols/{symbol}/ranges": {
+      "get": {
+        "operationId": "ranges_api_symbols__symbol__ranges_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "symbol",
+            "required": true,
+            "schema": {
+              "title": "Symbol",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SymbolRange"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ranges"
+      }
+    },
+    "/api/timeframe-profiles": {
+      "get": {
+        "operationId": "profiles_api_timeframe_profiles_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/TimeframeProfile"
+                  },
+                  "title": "Response Profiles Api Timeframe Profiles Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Profiles"
+      }
+    },
+    "/api/trades/{trade_id}/close": {
+      "post": {
+        "operationId": "close_api_trades__trade_id__close_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "trade_id",
+            "required": true,
+            "schema": {
+              "title": "Trade Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CloseRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StateResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Close"
+      }
+    },
+    "/api/trades/{trade_id}/review": {
+      "patch": {
+        "description": "Persist the user review (note + tags) for one session trade.",
+        "operationId": "review_api_trades__trade_id__review_patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "trade_id",
+            "required": true,
+            "schema": {
+              "title": "Trade Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StateResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Review"
+      }
+    },
+    "/api/trades/{trade_id}/stop": {
+      "put": {
+        "operationId": "stop_api_trades__trade_id__stop_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "trade_id",
+            "required": true,
+            "schema": {
+              "title": "Trade Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PriceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stop"
+      }
+    },
+    "/api/trades/{trade_id}/target": {
+      "put": {
+        "operationId": "target_api_trades__trade_id__target_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "trade_id",
+            "required": true,
+            "schema": {
+              "title": "Trade Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PriceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Target"
+      }
+    }
+  }
+}

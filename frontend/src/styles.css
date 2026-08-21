@@ -1080,3 +1080,184 @@ th {
     border-radius: var(--radius-medium) !important;
   }
 }
+
+
+.market-clock-candle {
+  color: var(--text-subtle);
+  font-size: 0.68rem;
+}
+/* --- Chart focus ------------------------------------------------------ */
+.chart-wrap {
+  position: relative;
+}
+
+.chart-focus-reset {
+  position: absolute;
+  top: var(--space-2);
+  right: var(--space-2);
+  z-index: 2;
+  padding: var(--space-1) var(--space-3);
+  font-size: 0.72rem;
+  font-family: var(--font-sans);
+  color: var(--text-on-accent);
+  background: var(--accent);
+  border: none;
+  border-radius: var(--radius-small);
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+.chart-focus-reset:hover {
+  background: var(--accent-hover);
+}
+
+/* --- Closed-trade review ---------------------------------------------- */
+.review-list {
+  display: grid;
+  gap: var(--space-4);
+  padding: var(--space-4);
+}
+
+.trade-review {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-medium);
+}
+
+.trade-review-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4) var(--space-5);
+  align-items: baseline;
+}
+
+.trade-review-summary > div {
+  display: flex;
+  gap: var(--space-3);
+  align-items: baseline;
+}
+
+.trade-review-summary h3 {
+  margin: 0;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.review-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3) var(--space-5);
+  margin: 0;
+}
+
+.review-metrics > div {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.review-metrics dt {
+  color: var(--text-subtle);
+  font-size: 0.64rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.review-metrics dd {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+}
+
+.review-sub {
+  color: var(--text-secondary);
+  font-size: 0.7rem;
+}
+
+.trade-review-details {
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-2);
+}
+
+.trade-review-details summary {
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+}
+
+.trade-review-details summary:hover {
+  color: var(--text-primary);
+}
+
+.review-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+  gap: var(--space-3);
+  margin: var(--space-3) 0 0;
+}
+
+.review-grid > div {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.review-grid dt {
+  color: var(--text-subtle);
+  font-size: 0.64rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.review-grid dd {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+}
+
+.trade-review-edit {
+  display: grid;
+  gap: var(--space-3);
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-3);
+}
+
+.review-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  align-items: center;
+}
+
+.review-tags input {
+  flex: 1;
+  min-width: 10rem;
+  padding: var(--space-1) var(--space-2);
+  font-family: var(--font-sans);
+  font-size: 0.8rem;
+  color: var(--text-primary);
+  background: var(--surface-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+}
+
+.tag-chip {
+  padding: var(--space-1) var(--space-2);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text-info);
+  background: var(--info-surface);
+  border-radius: var(--radius-small);
+}
+
+.trade-review-actions {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.review-saved {
+  color: var(--positive);
+  font-size: 0.75rem;
+}

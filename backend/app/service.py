@@ -3,11 +3,12 @@ from __future__ import annotations
 from collections import OrderedDict
 from datetime import datetime, timezone
 
-from .domain import ReplayState, serializable, state_snapshot
-from .execution import close_trade, open_trade, process_bar
+from .domain import ReplayState, bar_reveal_time, serializable, state_snapshot
+from .execution import close_trade, open_trade, process_bar, update_close_excursions
 from .indicators import sma
 from .market_data import RangeBars, bars_signature, load_bars_before
-from .repository import get_symbol, load_session, save_session
+from .repository import (get_symbol, get_trade, get_trade_reviews, load_state_cached,
+                         save_session, upsert_trade_review)
 from .stats import calculate_stats
 from .timeframes import MINUTES, resample
 
@@ -21,7 +22,7 @@ _WARMUP_PERIODS = 36
 # Response-history bounds: every open trade is always included so open risk stays
 # actionable, while only the closed-trade and fill history is capped. The frontend
 # renders honest totals from `*_total` and flags truncation via `*_truncated`.
-# Persisted state is never trimmed — sessions reload complete history for statistics.
+# Persisted state is never trimmed — the normalized tables keep the full history.
 MAX_RESPONSE_CLOSED_TRADES = 200
 MAX_RESPONSE_FILLS = 1000
 
@@ -157,16 +158,43 @@ def _state_response(state: ReplayState, before: list, replay: list) -> dict[str,
     response = state_snapshot(state)
     # Bound the response history: keep every open trade, cap closed trades and
     # fills to the most recent entries, and report honest totals/truncation.
+    # Persisted totals come from the indexed table counts (routine loads only
+    # hydrate a bounded recent window); in-memory states without persisted
+    # counts fall back to the hydrated history lengths.
     open_trades = [trade for trade in state.trades if trade.status == "open"]
     closed_trades = [trade for trade in state.trades if trade.status == "closed"]
-    response["trades"] = serializable(open_trades + closed_trades[-MAX_RESPONSE_CLOSED_TRADES:])
-    response["fills"] = serializable(state.fills[-MAX_RESPONSE_FILLS:])
-    response["closed_trades_total"] = len(closed_trades)
-    response["fills_total"] = len(state.fills)
-    response["closed_trades_truncated"] = len(closed_trades) > MAX_RESPONSE_CLOSED_TRADES
-    response["fills_truncated"] = len(state.fills) > MAX_RESPONSE_FILLS
+    response_trades = open_trades + closed_trades[-MAX_RESPONSE_CLOSED_TRADES:]
+    trade_dicts = serializable(response_trades)
+    # User reviews live in the trade_reviews table, not in trade rows: hydrate
+    # them per response (one bounded batch query) so wire trades carry them.
+    reviews = get_trade_reviews([trade.id for trade in response_trades])
+    for item in trade_dicts:
+        note, tags = reviews.get(item["id"], ("", []))
+        item["review_note"] = note
+        item["review_tags"] = tags
+        # A legacy closed trade recorded no exit precision: normalize null to
+        # "legacy" so the wire contract stays a closed vocabulary. Open trades
+        # keep null (no exit has happened yet).
+        if item["status"] == "closed" and item["exit_time_precision"] is None:
+            item["exit_time_precision"] = "legacy"
+    response["trades"] = trade_dicts
+    fill_dicts = serializable(state.fills[-MAX_RESPONSE_FILLS:])
+    for item in fill_dicts:
+        if item["time_precision"] is None:
+            item["time_precision"] = "legacy"
+    response["fills"] = fill_dicts
+    closed_total = max(state.closed_trades_total, len(closed_trades))
+    fills_total = max(state.fills_total, len(state.fills))
+    response["closed_trades_total"] = closed_total
+    response["fills_total"] = fills_total
+    response["closed_trades_truncated"] = closed_total > len(closed_trades[-MAX_RESPONSE_CLOSED_TRADES:])
+    response["fills_truncated"] = fills_total > len(state.fills[-MAX_RESPONSE_FILLS:])
     current_bar = _current_bar(before, replay, current_index)
-    response["current_market_time"] = current_bar.timestamp.isoformat() if current_bar else None
+    # The market clock shows the time at which the current price became
+    # causally available (the latest revealed candle's close). The underlying
+    # candle's opening time is exposed separately for chart alignment.
+    response["current_market_time"] = bar_reveal_time(current_bar).isoformat() if current_bar else None
+    response["current_candle_time"] = current_bar.timestamp.isoformat() if current_bar else None
     response["current_price"] = current_bar.close if current_bar else None
     response["displayed_bars"] = serializable(displayed)
     indicator_source = _tail(before, replay, current_index, _context_window_bars(state))
@@ -190,7 +218,7 @@ def state_response(state: ReplayState) -> dict[str, object]:
 
 
 def get_state(session_id: str) -> ReplayState:
-    state = load_session(session_id)
+    state = load_state_cached(session_id)
     if not state:
         raise SessionNotFoundError("unknown session")
     return state
@@ -207,7 +235,9 @@ def step(state: ReplayState) -> dict[str, object]:
             state.status = "completed"
             break
         state.current_index = next_index
-        process_bar(state, replay[next_index], multiplier)
+        bar = replay[next_index]
+        process_bar(state, bar, multiplier)
+        update_close_excursions(state, bar, multiplier)
     if state.current_index >= len(replay) - 1:
         state.status = "completed"
     save_session(state, "replay_stepped", {"step": state.advance_step_minutes})
@@ -247,7 +277,7 @@ def market_order(state: ReplayState, direction: str, quantity: float, stop_price
     current_bar = _current_bar(before, replay, state.current_index)
     if current_bar is None:
         raise ValueError("no causal market price is available")
-    trade = open_trade(state, current_bar.timestamp, float(current_bar.close), direction, quantity,
+    trade = open_trade(state, bar_reveal_time(current_bar), float(current_bar.close), direction, quantity,
                        stop_price, target_price, multiplier)
     save_session(state, "order_filled", {"direction": direction, "quantity": quantity},
                  orders=[{"trade_id": trade.id, "order_type": "market_entry",
@@ -264,7 +294,7 @@ def close_position(state: ReplayState, trade_id: str, quantity: float) -> dict[s
     current_bar = _current_bar(before, replay, state.current_index)
     if current_bar is None:
         raise ValueError("no causal market price is available")
-    close_trade(state, trade, current_bar.timestamp, float(current_bar.close), quantity, "manual", multiplier)
+    close_trade(state, trade, bar_reveal_time(current_bar), float(current_bar.close), quantity, "manual", multiplier)
     save_session(state, "position_closed", {"trade_id": trade_id, "quantity": quantity},
                  orders=[{"trade_id": trade.id, "order_type": "market_close", "payload": {"quantity": quantity}}])
     return _state_response(state, before, replay)
@@ -284,8 +314,42 @@ def close_all_positions(state: ReplayState) -> dict[str, object]:
     if open_trades:
         for trade in open_trades:
             quantity = trade.remaining_quantity
-            close_trade(state, trade, current_bar.timestamp, float(current_bar.close), quantity, reason, multiplier)
+            close_trade(state, trade, bar_reveal_time(current_bar), float(current_bar.close), quantity, reason, multiplier)
             orders.append({"trade_id": trade.id, "order_type": "close_all",
                            "payload": {"quantity": quantity, "reason": reason}})
     save_session(state, "positions_closed_all", {"closed": len(open_trades)}, orders=orders)
     return _state_response(state, before, replay)
+
+
+# Review-note/tag bounds: a review is a short human annotation, not a document.
+MAX_REVIEW_NOTE_LENGTH = 5000
+MAX_REVIEW_TAGS = 20
+MAX_REVIEW_TAG_LENGTH = 64
+
+
+def update_trade_review(state: ReplayState, trade_id: str, review_note: str,
+                        review_tags: list[str]) -> dict[str, object]:
+    """Persist the user review (note + tags) for one session trade.
+
+    The trade must exist in the session (any status, in or out of the hydrated
+    window). Reviews live in the trade_reviews table, not in the trade row: the
+    mutation never rewrites the trade or bumps the session revision.
+    """
+    if get_trade(state.id, trade_id) is None:
+        raise TradeNotFoundError("trade not found in session")
+    note = review_note.strip()
+    if len(note) > MAX_REVIEW_NOTE_LENGTH:
+        raise ValueError(f"review note must be at most {MAX_REVIEW_NOTE_LENGTH} characters")
+    tags: list[str] = []
+    for raw in review_tags:
+        cleaned = str(raw).strip()
+        if not cleaned:
+            continue
+        if len(cleaned) > MAX_REVIEW_TAG_LENGTH:
+            raise ValueError(f"review tags must be at most {MAX_REVIEW_TAG_LENGTH} characters")
+        if cleaned not in tags:
+            tags.append(cleaned)
+    if len(tags) > MAX_REVIEW_TAGS:
+        raise ValueError(f"at most {MAX_REVIEW_TAGS} review tags are allowed")
+    upsert_trade_review(state.id, trade_id, note, tags)
+    return state_response(state)

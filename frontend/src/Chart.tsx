@@ -21,7 +21,14 @@ function chartTime(timestamp: string): UTCTimestamp {
   return Math.floor(new Date(timestamp).getTime() / 1000) as UTCTimestamp;
 }
 
-export function ReplayChart({ replay, precision }: { replay: ReplayState; precision: number }) {
+type ChartFocus = { from: string; to: string };
+
+export function ReplayChart({ replay, precision, focus, onClearFocus }: {
+  replay: ReplayState;
+  precision: number;
+  focus: ChartFocus | null;
+  onClearFocus: () => void;
+}) {
   const container = useRef<HTMLDivElement>(null);
   const chart = useRef<IChartApi | null>(null);
   const candles = useRef<ISeriesApi<"Candlestick"> | null>(null);
@@ -29,6 +36,7 @@ export function ReplayChart({ replay, precision }: { replay: ReplayState; precis
   const markers = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const priceLines = useRef<IPriceLine[]>([]);
   const previousDataLength = useRef(0);
+  const wasFocused = useRef(false);
 
   useEffect(() => {
     if (!container.current) return;
@@ -195,12 +203,53 @@ export function ReplayChart({ replay, precision }: { replay: ReplayState; precis
     previousDataLength.current = candleData.length;
   }, [replay.displayed_bars, replay.fills, replay.indicators.sma_close_35, replay.trades]);
 
+  // Chart focus: zoom to a closed trade's entry-to-exit region without
+  // recreating the chart instance. Clearing focus returns the view to the
+  // latest revealed area (only if a focus was previously active).
+  useEffect(() => {
+    const instance = chart.current;
+    const candleSeries = candles.current;
+    if (!instance || !candleSeries) return;
+    if (focus) {
+      wasFocused.current = true;
+      const from = chartTime(focus.from);
+      const to = chartTime(focus.to);
+      const span = Math.max(to - from, 60);
+      const margin = Math.max(span * 0.1, 300);
+      instance.timeScale().setVisibleRange({
+        from: (from - margin) as UTCTimestamp,
+        to: (to + margin) as UTCTimestamp,
+      });
+      return;
+    }
+    if (!wasFocused.current) return;
+    wasFocused.current = false;
+    const data = candleSeries.data();
+    if (data.length >= 10) {
+      instance.timeScale().setVisibleLogicalRange({ from: data.length - 60, to: data.length + 5 });
+    } else {
+      instance.timeScale().fitContent();
+    }
+  }, [focus]);
+
   return (
-    <div
-      className="chart"
-      ref={container}
-      role="img"
-      aria-label={`${replay.symbol} ${replay.visible_timeframe} candlestick chart with trade markers`}
-    />
+    <div className="chart-wrap">
+      <div
+        className="chart"
+        ref={container}
+        role="img"
+        aria-label={`${replay.symbol} ${replay.visible_timeframe} candlestick chart with trade markers`}
+      />
+      {focus && (
+        <button
+          className="chart-focus-reset"
+          type="button"
+          onClick={onClearFocus}
+          aria-label="Return chart to the latest replay area"
+        >
+          Back to latest
+        </button>
+      )}
+    </div>
   );
 }
