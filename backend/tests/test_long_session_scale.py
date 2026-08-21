@@ -149,6 +149,7 @@ def _huge_state(closed_count: int = 3000, fills_per_closed: int = 2, open_count:
 
 def test_state_json_stays_bounded_while_tables_keep_full_history(db_paths):
     state = _huge_state()  # 3005 trades, ~6000 fills
+    full_trade_ids = [trade.id for trade in state.trades]
     repository.save_session(state, "first_save")
     with repository.connect() as db:
         blob = db.execute("SELECT state_json FROM replay_sessions WHERE id=?", (state.id,)).fetchone()[0]
@@ -168,8 +169,7 @@ def test_state_json_stays_bounded_while_tables_keep_full_history(db_paths):
     assert "fills" not in value2
     assert value2["revision"] == 1
 
-    # The normalized tables keep the complete history (maintenance path).
-    assert [trade.id for trade in repository.all_trades(state.id)] == [trade.id for trade in state.trades]
+    assert [trade.id for trade in repository.all_trades(state.id)] == full_trade_ids
     with repository.connect() as db:
         fills_count = db.execute(
             "SELECT COUNT(*) FROM fills WHERE session_id=?", (state.id,)

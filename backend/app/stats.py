@@ -46,17 +46,17 @@ def book_trade_close(state: ReplayState, trade: Trade, exit_time: datetime | Non
         acc.losing_trades += 1
         acc.losing_pnl_sum += trade.realized_pnl
     if trade.initial_risk:
-        acc.r_values.append(trade.realized_pnl / trade.initial_risk)
+        r = trade.realized_pnl / trade.initial_risk
+        acc.r_count += 1
+        acc.r_sum += r
+        if r > 0:
+            acc.winning_r_count += 1
+            acc.winning_r_sum += r
+        elif r < 0:
+            acc.losing_r_count += 1
+            acc.losing_r_sum += r
     if exit_time is not None:
         acc.holding_seconds_sum += (exit_time - trade.entry_time).total_seconds()
-
-
-def _median(values: list[float]) -> float:
-    if not values:
-        return 0
-    ordered = sorted(values)
-    mid = len(ordered) // 2
-    return ordered[mid] if len(ordered) % 2 else (ordered[mid - 1] + ordered[mid]) / 2
 
 
 def calculate_stats(state: ReplayState, current_market_price: float | None = None,
@@ -101,9 +101,8 @@ def calculate_stats(state: ReplayState, current_market_price: float | None = Non
     peak = state.initial_balance if acc.peak_realized_balance is None else max(state.initial_balance, acc.peak_realized_balance)
     max_drawdown = max(acc.max_realized_drawdown, peak - equity)
 
-    r_values = acc.r_values
-    winning_r = [value for value in r_values if value > 0]
-    losing_r = [value for value in r_values if value < 0]
+    r_count = acc.r_count
+    r_sum = acc.r_sum
     return {
         "trades_opened": acc.trades_opened,
         "trades_completed": completed,
@@ -117,11 +116,10 @@ def calculate_stats(state: ReplayState, current_market_price: float | None = Non
         "unrealized_pnl": unrealized_pnl,
         "balance": balance,
         "equity": equity,
-        "total_r": sum(r_values),
-        "average_r": sum(r_values) / len(r_values) if r_values else 0,
-        "median_r": _median(r_values),
-        "average_win_r": sum(winning_r) / len(winning_r) if winning_r else 0,
-        "average_losing_r": sum(losing_r) / len(losing_r) if losing_r else 0,
+        "total_r": r_sum,
+        "average_r": r_sum / r_count if r_count else 0,
+        "average_win_r": acc.winning_r_sum / acc.winning_r_count if acc.winning_r_count else 0,
+        "average_losing_r": acc.losing_r_sum / acc.losing_r_count if acc.losing_r_count else 0,
         "average_win": acc.winning_pnl_sum / acc.winning_trades if acc.winning_trades else 0,
         "average_loss": acc.losing_pnl_sum / acc.losing_trades if acc.losing_trades else 0,
         "profit_factor": acc.winning_pnl_sum / abs(acc.losing_pnl_sum) if acc.losing_pnl_sum else 0,
@@ -198,7 +196,6 @@ def calculate_stats_from_history(state: ReplayState, current_market_price: float
         "equity": equity,
         "total_r": sum(r_values),
         "average_r": sum(r_values) / len(r_values) if r_values else 0,
-        "median_r": _median(r_values),
         "average_win_r": sum(winning_r) / len(winning_r) if winning_r else 0,
         "average_losing_r": sum(losing_r) / len(losing_r) if losing_r else 0,
         "average_win": sum(wins) / len(wins) if wins else 0,

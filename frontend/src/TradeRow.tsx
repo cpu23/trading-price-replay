@@ -1,14 +1,14 @@
 import { useEffect, useState } from "react";
 import { api } from "./api";
 import { formatAdaptiveNumber, formatNumber, formatPrice, utcDateTime } from "./helpers";
-import type { ReplayState, Trade } from "./types";
+import type { ReplaySnapshot, ReplayUpdate, Trade } from "./types";
 
 type TradeRowProps = {
   trade: Trade;
-  replay: ReplayState;
+  replay: ReplaySnapshot;
   precision: number;
   busy: boolean;
-  action: (call: () => Promise<ReplayState>) => Promise<void>;
+  action: (call: () => Promise<ReplayUpdate>) => Promise<void>;
 };
 
 export function TradeRow({ trade, replay, precision, busy, action }: TradeRowProps) {
@@ -32,7 +32,7 @@ export function TradeRow({ trade, replay, precision, busy, action }: TradeRowPro
       return;
     }
     setValidationError("");
-    await action(() => api.post<ReplayState>(`/api/trades/${trade.id}/close`, {
+    await action(() => api.post<ReplayUpdate>(`/api/trades/${trade.id}/close`, {
       session_id: replay.id,
       quantity,
     }));
@@ -55,7 +55,7 @@ export function TradeRow({ trade, replay, precision, busy, action }: TradeRowPro
       }
     }
     setValidationError("");
-    await action(() => api.put<ReplayState>(`/api/trades/${trade.id}/${kind}`, {
+    await action(() => api.put<ReplayUpdate>(`/api/trades/${trade.id}/${kind}`, {
       session_id: replay.id,
       price,
     }));

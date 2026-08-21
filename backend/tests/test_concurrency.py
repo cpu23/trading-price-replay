@@ -197,7 +197,7 @@ def client(tmp_path, monkeypatch):
 
 
 def test_stale_save_via_direct_route_save_returns_409(client, monkeypatch):
-    from app import main as main_module
+    from app import service as service_module
 
     created = client.post("/api/replay/sessions", json={
         "symbol": "EURUSD", "start": "2026-01-02T17:00:00Z", "end": "2026-01-02T17:06:00Z",
@@ -210,14 +210,14 @@ def test_stale_save_via_direct_route_save_returns_409(client, monkeypatch):
         "direction": "long", "quantity": 1, "stop_price": 1.0, "target_price": 2.0,
     })
     assert trade.status_code == 200, trade.text
-    trade_id = trade.json()["trades"][0]["id"]
+    trade_id = trade.json()["trade_upserts"][0]["id"]
 
-    # The stop route saves the loaded state directly, outside `attempt`; a stale
-    # save must surface as 409 (not 500) via the app-wide exception handler.
+    # `attempt` does not swallow StaleSessionError: a stale save from any
+    # mutation route must surface as 409 (not 500) via the app-wide handler.
     def stale_save(*_args, **_kwargs):
         raise StaleSessionError("session was modified or deleted by another client; reload and retry")
 
-    monkeypatch.setattr(main_module, "save_session", stale_save)
+    monkeypatch.setattr(service_module, "save_session", stale_save)
     response = client.put(f"/api/trades/{trade_id}/stop", json={"session_id": session_id, "price": 1.05})
     assert response.status_code == 409
     assert response.json()["detail"] == "session was modified or deleted by another client; reload and retry"

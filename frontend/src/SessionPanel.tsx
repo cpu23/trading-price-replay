@@ -2,7 +2,7 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import { api, errorMessage } from "./api";
 import { fromDateTimeLocalValue, toDateTimeLocalValue, validateReplayRange } from "./helpers";
 import { SESSION_STORAGE_KEY, useReplayStore } from "./store";
-import type { ReplayState } from "./types";
+import type { ReplaySnapshot } from "./types";
 
 export function SessionPanel() {
   const symbols = useReplayStore((state) => state.symbols);
@@ -70,7 +70,7 @@ export function SessionPanel() {
     const endUtc = fromDateTimeLocalValue(end);
     if (!startUtc || !endUtc) return;
     setFormError("");
-    await action(() => api.post<ReplayState>("/api/replay/sessions", {
+    await action(() => api.post<ReplaySnapshot>("/api/replay/sessions", {
       symbol: selected.symbol,
       start: startUtc,
       end: endUtc,
@@ -242,7 +242,7 @@ export function SessionPanel() {
                   </div>
                 ) : (
                   <div className="row-actions">
-                    <button className="button-primary button-small" type="button" onClick={() => void action(() => api.get<ReplayState>(`/api/replay/sessions/${session.id}/state`))} disabled={busy}>
+                    <button className="button-primary button-small" type="button" onClick={() => void action(() => api.get<ReplaySnapshot>(`/api/replay/sessions/${session.id}/state`))} disabled={busy}>
                       Resume
                     </button>
                     <button className="button-quiet button-small" type="button" onClick={() => setConfirmDelete(session.id)} disabled={busy}>

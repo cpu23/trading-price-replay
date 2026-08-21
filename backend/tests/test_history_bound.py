@@ -9,7 +9,7 @@ from app import config, market_data, repository
 from app.domain import Fill, ReplayState, Trade
 from app.main import app
 from app.stats import build_accumulator_from_history
-from app.service import MAX_RESPONSE_CLOSED_TRADES, MAX_RESPONSE_FILLS, _state_response
+from app.service import MAX_RESPONSE_CLOSED_TRADES, MAX_RESPONSE_FILLS, _snapshot_response
 
 
 def ts(minute: int = 0) -> datetime:
@@ -52,7 +52,7 @@ def build_big_state(closed_count: int = MAX_RESPONSE_CLOSED_TRADES + 50,
 
 def test_response_caps_history_but_keeps_every_open_trade():
     state = build_big_state()
-    response = _state_response(state, [], [])
+    response = _snapshot_response(state, [], [])
 
     open_ids = [trade.id for trade in state.trades if trade.status == "open"]
     returned_open = [trade for trade in response["trades"] if trade["status"] == "open"]
@@ -89,7 +89,7 @@ def test_response_within_bounds_reports_no_truncation():
         id=str(uuid4()), trade_id=trade_id, session_id=state.id, timestamp=ts(0),
         price=10.0, quantity=1.0, reason="entry", pnl=-0.5, market_price=10.0,
     ))
-    response = _state_response(state, [], [])
+    response = _snapshot_response(state, [], [])
     assert response["closed_trades_total"] == 0
     assert response["closed_trades_truncated"] is False
     assert response["fills_total"] == 1
@@ -208,9 +208,13 @@ def test_api_returns_bounded_history_with_totals_and_full_stats(client):
     state = build_big_state()
     state.symbol = "EURUSD"
     # Simulate the schema-v6 backfill: a legacy session's persisted snapshot
-    # carries the accumulator rebuilt from its full ledger history, so the
-    # stats endpoint reports full-session numbers without scanning history.
+    # carries the accumulator and exact history totals rebuilt from its full
+    # ledger history, so the stats endpoint reports full-session numbers without
+    # scanning history.
     state.accumulator = build_accumulator_from_history(state, state.trades, state.fills)
+    state.closed_trades_total = sum(1 for t in state.trades if t.status == "closed")
+    state.fills_total = len(state.fills)
+    full_history_net_pnl = sum(fill.pnl for fill in state.fills)
     repository.save_session(state, "seeded")
     body = client.get(f"/api/replay/sessions/{state.id}/state").json()
     assert body["closed_trades_total"] == 250
@@ -223,4 +227,4 @@ def test_api_returns_bounded_history_with_totals_and_full_stats(client):
     # The stats endpoint reports full-session numbers, not the capped arrays.
     stats = client.get(f"/api/replay/sessions/{state.id}/stats").json()
     assert stats["trades_completed"] == 250
-    assert stats["net_pnl"] == sum(fill.pnl for fill in state.fills)
+    assert stats["net_pnl"] == full_history_net_pnl

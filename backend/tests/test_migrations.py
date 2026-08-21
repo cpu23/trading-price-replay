@@ -6,7 +6,10 @@ asserts observable state: recorded version, tables/columns/indexes, and that
 every pre-existing row survived.
 """
 
+import json
 import sqlite3
+from datetime import datetime
+from pathlib import Path
 
 import pytest
 
@@ -115,13 +118,41 @@ def _build_legacy(db_path, data_version=None, revision=None) -> None:
             "INSERT INTO import_batches VALUES(?,?,?,?,?,?,?,?)",
             ("b1", "EURUSD", "/tmp/source.csv", "schema-v1", "published", 100, "{}", "2026-01-02T00:00:00+00:00"),
         )
+        # A closed legacy trade with its full fill ledger, in the pre-cost
+        # contract shape (no cost totals, no chart anchors, no exit metadata):
+        # the v6 accumulator backfill and the v7 metadata backfill must be able
+        # to reconstruct every field from it exactly.
+        trade_payload = {
+            "id": "t1", "session_id": "s1", "direction": "long",
+            "initial_quantity": 1.0, "remaining_quantity": 0.0,
+            "entry_time": "2026-01-01T00:01:00+00:00", "entry_price": 10.0,
+            "stop_price": 9.9, "target_price": 10.2, "initial_risk": 10.0,
+            "realized_pnl": 5.0, "status": "closed",
+        }
+        fill_payloads = [
+            {"id": "f1", "trade_id": "t1", "session_id": "s1",
+             "timestamp": "2026-01-01T00:01:00+00:00", "price": 10.0,
+             "quantity": 1.0, "reason": "entry", "pnl": 0.0},
+            {"id": "f2", "trade_id": "t1", "session_id": "s1",
+             "timestamp": "2026-01-01T00:30:00+00:00", "price": 10.1,
+             "quantity": 1.0, "reason": "manual", "pnl": 5.0},
+        ]
+        # The legacy snapshot embedded the complete history; the normalized
+        # tables mirror it.
         db.execute(
             "INSERT INTO replay_sessions(id,state_json,updated_at"
             + (",revision" if revision is not None else "")
             + ") VALUES(?,?,?"
             + (",?" if revision is not None else "")
             + ")",
-            ("s1", '{"symbol": "EURUSD"}', "2026-01-02T00:00:00+00:00")
+            ("s1", json.dumps({
+                "id": "s1", "symbol": "EURUSD",
+                "start": "2026-01-01T00:00:00+00:00",
+                "end": "2026-01-01T23:59:00+00:00",
+                "profile": "utc_aligned",
+                "trades": [trade_payload],
+                "fills": fill_payloads,
+            }), "2026-01-02T00:00:00+00:00")
             + ((revision,) if revision is not None else ()),
         )
         # A customized built-in profile row plus a custom one: seeding must not
@@ -135,8 +166,15 @@ def _build_legacy(db_path, data_version=None, revision=None) -> None:
             "INSERT INTO orders VALUES(?,?,?,?,?,?)",
             ("o1", "s1", "t1", "market_entry", '{"qty": 1}', "2026-01-02T00:00:00+00:00"),
         )
-        db.execute("INSERT INTO trades VALUES(?,?,?,?)", ("t1", "s1", '{"id": "t1"}', "2026-01-02T00:00:00+00:00"))
-        db.execute("INSERT INTO fills VALUES(?,?,?,?,?)", ("f1", "s1", "t1", '{"id": "f1"}', "2026-01-02T00:00:00+00:00"))
+        db.execute(
+            "INSERT INTO trades VALUES(?,?,?,?)",
+            ("t1", "s1", json.dumps(trade_payload), "2026-01-02T00:00:00+00:00"),
+        )
+        for fill in fill_payloads:
+            db.execute(
+                "INSERT INTO fills VALUES(?,?,?,?,?)",
+                (fill["id"], "s1", "t1", json.dumps(fill), "2026-01-02T00:00:00+00:00"),
+            )
         db.execute(
             "INSERT INTO replay_events(id,session_id,event_type,payload_json,created_at) VALUES(?,?,?,?,?)",
             (1, "s1", "session_started", "{}", "2026-01-02T00:00:00+00:00"),
@@ -180,7 +218,7 @@ def test_oldest_legacy_schema_upgrades_without_data_loss(db_path):
         assert tuple(db.execute("SELECT id,revision FROM replay_sessions").fetchone()) == ("s1", 1)
         for table, expected in (
             ("import_batches", 1), ("session_indicators", 1), ("orders", 1),
-            ("trades", 1), ("fills", 1), ("replay_events", 1),
+            ("trades", 1), ("fills", 2), ("replay_events", 1),
         ):
             assert db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == expected
         # Seeding is INSERT OR IGNORE: the customized built-in and the custom
@@ -206,7 +244,12 @@ def test_partial_legacy_schema_is_completed(db_path):
         )
         db.execute(
             "INSERT INTO replay_sessions VALUES(?,?,?)",
-            ("s1", '{"symbol": "EURUSD"}', "2026-01-02T00:00:00+00:00"),
+            ("s1", json.dumps({
+                "id": "s1", "symbol": "EURUSD",
+                "start": "2026-01-01T00:00:00+00:00",
+                "end": "2026-01-01T23:59:00+00:00",
+                "profile": "utc_aligned",
+            }), "2026-01-02T00:00:00+00:00"),
         )
     with sqlite3.connect(db_path) as db:
         assert read_schema_version(db) is None
@@ -284,7 +327,7 @@ def test_failed_migration_rolls_back_atomically(db_path, monkeypatch):
         assert read_schema_version(db) == CURRENT_SCHEMA_VERSION
         assert "revision" in _columns(db, "replay_sessions")
         assert tuple(db.execute("SELECT id,revision FROM replay_sessions").fetchone()) == ("s1", 1)
-        assert db.execute("SELECT COUNT(*) FROM fills").fetchone()[0] == 1
+        assert db.execute("SELECT COUNT(*) FROM fills").fetchone()[0] == 2
 
 
 def test_newer_recorded_version_is_rejected_before_touching_schema(db_path):
@@ -342,3 +385,180 @@ def test_repository_initialize_delegates_and_preserves_legacy_data(db_path, monk
         assert read_schema_version(db) == CURRENT_SCHEMA_VERSION
         assert db.execute("SELECT COUNT(*) FROM orders").fetchone()[0] == 1
         assert db.execute("SELECT COUNT(*) FROM timeframe_profiles").fetchone()[0] == 4
+
+
+# --- v6/v7 strict backfill semantics -----------------------------------------
+
+
+def _legacy_session_history(closed_count: int, fills_per_trade: int, open_count: int):
+    """Deterministic legacy trade/fill payloads in the pre-cost contract shape
+    (no cost components, no chart anchors, no exit metadata): one entry plus
+    partial exits plus a final exit per trade, with mixed winning/losing
+    outcomes so every R aggregate is exercised."""
+    base = "2026-01-01T00:00:00+00:00"
+    from datetime import timedelta
+
+    t0 = datetime.fromisoformat(base)
+    trades: list[dict] = []
+    fills: list[dict] = []
+    for index in range(closed_count + open_count):
+        trade_id = f"t{index}"
+        open_ = index >= closed_count
+        entry = t0 + timedelta(minutes=index * (fills_per_trade + 1))
+        losing = index % 3 == 0
+        final_pnl = -6.0 if losing else 0.5
+        trades.append({
+            "id": trade_id, "session_id": "s1", "direction": "long" if index % 2 == 0 else "short",
+            "initial_quantity": 1.0, "remaining_quantity": 1.0 if open_ else 0.0,
+            "entry_time": entry.isoformat(), "entry_price": 10.0,
+            "stop_price": 9.5, "target_price": 11.0, "initial_risk": 0.5,
+            "realized_pnl": 4.0 + final_pnl if not open_ else 0.0,
+            "status": "open" if open_ else "closed",
+        })
+        for fill_index in range(fills_per_trade if not open_ else 1):
+            is_entry = fill_index == 0
+            is_final = fill_index == fills_per_trade - 1 and not open_
+            if is_entry:
+                pnl = 0.0
+            elif is_final:
+                pnl = final_pnl
+            else:
+                pnl = 1.0
+            fills.append({
+                "id": f"f{index}-{fill_index}", "trade_id": trade_id, "session_id": "s1",
+                "timestamp": (entry + timedelta(minutes=fill_index)).isoformat(),
+                "price": 10.0, "quantity": 1.0 if is_entry else 0.25,
+                "reason": "entry" if is_entry else ("manual" if not is_final else "target"),
+                "pnl": pnl,
+            })
+    return trades, fills
+
+
+def _build_pre_v6_db(db_path, closed_count: int, fills_per_trade: int,
+                     open_count: int) -> tuple[list[dict], list[dict]]:
+    """A real pre-v6 database: current tables (v6/v7 are data-only migrations)
+    stamped at version 5, holding legacy-shaped ledger rows and a snapshot with
+    the complete embedded history."""
+    trades, fills = _legacy_session_history(closed_count, fills_per_trade, open_count)
+    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(db_path) as db:
+        migrate(db)
+        _set_version(db, 5)
+        db.execute(
+            "INSERT INTO replay_sessions(id,state_json,updated_at) VALUES(?,?,?)",
+            ("s1", json.dumps({
+                "id": "s1", "symbol": "EURUSD",
+                "start": "2026-01-01T00:00:00+00:00",
+                "end": "2026-02-01T00:00:00+00:00",
+                "profile": "utc_aligned",
+                "trades": trades, "fills": fills,
+            }), "2026-01-02T00:00:00+00:00"),
+        )
+        for trade in trades:
+            db.execute(
+                "INSERT INTO trades(id,session_id,status,trade_json,updated_at) "
+                "VALUES(?,?,?,?,?)",
+                (trade["id"], "s1", trade["status"], json.dumps(trade),
+                 "2026-01-02T00:00:00+00:00"),
+            )
+        for fill in fills:
+            db.execute(
+                "INSERT INTO fills(id,session_id,trade_id,fill_json,created_at) VALUES(?,?,?,?,?)",
+                (fill["id"], "s1", fill["trade_id"], json.dumps(fill), "2026-01-02T00:00:00+00:00"),
+            )
+    return trades, fills
+
+
+def test_v6_backfill_failure_keeps_version_5(db_path):
+    """A session that should be backfilled but cannot be reconstructed exactly
+    fails migration v6: the whole v6 transaction rolls back, the schema version
+    stays at 5, and the snapshot is left untouched (no false accumulator)."""
+    with sqlite3.connect(db_path) as db:
+        migrate(db)
+        _set_version(db, 5)
+        db.execute(
+            "INSERT INTO replay_sessions(id,state_json,updated_at) VALUES(?,?,?)",
+            ("s1", json.dumps({
+                "id": "s1", "symbol": "EURUSD",
+                "start": "2026-01-01T00:00:00+00:00",
+                "end": "2026-01-01T23:59:00+00:00",
+                "profile": "utc_aligned",
+            }), "2026-01-02T00:00:00+00:00"),
+        )
+        db.execute(
+            "INSERT INTO trades(id,session_id,trade_json,updated_at) VALUES(?,?,?,?)",
+            ("t1", "s1", '{"id": "t1"}', "2026-01-02T00:00:00+00:00"),
+        )
+    with sqlite3.connect(db_path) as db:
+        with pytest.raises(Exception):
+            migrate(db)
+        assert read_schema_version(db) == 5
+        value = json.loads(db.execute("SELECT state_json FROM replay_sessions").fetchone()[0])
+        assert "accumulator" not in value
+
+
+def test_pre_v6_backup_restores_with_exact_accumulator(tmp_path, monkeypatch):
+    """The row_factory regression: a pre-v6 database whose history exceeds every
+    bounded cap is backed up and restored through the maintenance path, whose
+    candidate connection is a plain ``sqlite3.connect()`` (rows are tuples, not
+    mappings). The v6 backfill must reconstruct the accumulator exactly from
+    the normalized ledger, drop the redundant embedded history, and the
+    restored session's statistics must equal the full-history reference."""
+    from app.domain import ReplayState
+    from app.maintenance import backup_database, restore_database
+    from app.stats import calculate_stats, calculate_stats_from_history
+
+    closed_count, fills_per_trade, open_count = 210, 6, 2
+    live = tmp_path / "sessions" / "price_replay.sqlite3"
+    monkeypatch.setattr(config, "DATA_ROOT", tmp_path)
+    monkeypatch.setattr(config, "RAW_ROOT", tmp_path / "raw")
+    monkeypatch.setattr(config, "OHLCV_ROOT", tmp_path / "ohlcv")
+    monkeypatch.setattr(config, "DB_PATH", live)
+    monkeypatch.setattr(repository, "DB_PATH", live)
+
+    _, fills = _build_pre_v6_db(live, closed_count, fills_per_trade, open_count)
+    assert closed_count > repository.RECENT_CLOSED_TRADES_LIMIT
+    assert len(fills) > repository.RECENT_FILLS_LIMIT
+
+    backup = tmp_path / "pre-v6-backup.sqlite3"
+    backup_database(backup)
+    restore_database(backup)
+
+    with sqlite3.connect(live) as db:
+        assert read_schema_version(db) == CURRENT_SCHEMA_VERSION
+        value = json.loads(
+            db.execute("SELECT state_json FROM replay_sessions WHERE id='s1'").fetchone()[0]
+        )
+        # The redundant embedded history is gone; the backfilled aggregates
+        # and exact totals are present.
+        assert "trades" not in value and "fills" not in value
+        assert "accumulator" in value
+        assert value["accumulator"]["trades_opened"] == closed_count + open_count
+        assert value["accumulator"]["trades_completed"] == closed_count
+        assert value["closed_trades_total"] == closed_count
+        assert value["fills_total"] == len(fills)
+
+    # Bounded hydration: the working set is capped while the ledger stays whole.
+    state = repository.load_session("s1")
+    assert state is not None
+    assert len(state.fills) == repository.RECENT_FILLS_LIMIT
+    assert len([trade for trade in state.trades if trade.status == "closed"]) \
+        == repository.RECENT_CLOSED_TRADES_LIMIT
+    assert len([trade for trade in state.trades if trade.status == "open"]) == open_count
+
+    # Accumulator-based statistics equal the full-history reference computed
+    # over every ledger row (the bounded working set alone cannot reproduce
+    # them, so a missing accumulator cannot accidentally pass).
+    reference = ReplayState(
+        id="s1", symbol="EURUSD",
+        start=datetime.fromisoformat("2026-01-01T00:00:00+00:00"),
+        end=datetime.fromisoformat("2026-02-01T00:00:00+00:00"),
+        profile="utc_aligned",
+    )
+    reference.trades = repository.all_trades("s1")
+    with sqlite3.connect(live) as db:
+        rows = db.execute(
+            "SELECT fill_json FROM fills WHERE session_id='s1' ORDER BY rowid"
+        ).fetchall()
+    reference.fills = [repository._parse_fill(json.loads(item[0])) for item in rows]
+    assert calculate_stats(state) == calculate_stats_from_history(reference)

@@ -38,7 +38,7 @@ def open_trade(client, sid) -> str:
         "direction": "long", "quantity": 1,
     })
     assert opened.status_code == 200, opened.text
-    return opened.json()["trades"][-1]["id"]
+    return opened.json()["trade_upserts"][-1]["id"]
 
 
 def test_review_roundtrip_persists_and_survives_reload(client):
@@ -52,9 +52,10 @@ def test_review_roundtrip_persists_and_survives_reload(client):
         "session_id": sid, "review_note": "  watch size  ", "review_tags": ["a", "a", "b", ""],
     })
     assert patched.status_code == 200, patched.text
-    item = next(t for t in patched.json()["trades"] if t["id"] == trade_id)
-    assert item["review_note"] == "watch size"  # trimmed
-    assert item["review_tags"] == ["a", "b"]  # de-duplicated, empty dropped, order kept
+    record = patched.json()
+    assert record["trade_id"] == trade_id
+    assert record["note"] == "watch size"  # trimmed
+    assert record["tags"] == ["a", "b"]  # de-duplicated, empty dropped, order kept
 
     # A second session for the same client would evict nothing; force a real
     # database reload by dropping the in-memory cache.
@@ -99,7 +100,7 @@ def test_review_validation_bounds(client):
         "session_id": sid, "review_tags": ["same"] * (MAX_REVIEW_TAGS + 5),
     })
     assert deduped.status_code == 200, deduped.text
-    assert next(t for t in deduped.json()["trades"] if t["id"] == trade_id)["review_tags"] == ["same"]
+    assert deduped.json()["tags"] == ["same"]
 
 
 def test_review_unknown_trade_is_404(client):
@@ -124,7 +125,8 @@ def test_review_does_not_bump_session_revision(client):
         "session_id": sid, "review_note": "note", "review_tags": ["x"],
     })
     assert patched.status_code == 200, patched.text
-    assert patched.json()["revision"] == before
+    after = client.get(f"/api/replay/sessions/{sid}/state").json()["revision"]
+    assert after == before
 
 
 def test_review_works_for_trades_outside_hydrated_window(client):
@@ -173,8 +175,9 @@ def test_review_works_for_trades_outside_hydrated_window(client):
         "session_id": state.id, "review_note": "old but reviewable",
     })
     assert patched.status_code == 200, patched.text
-    # The old trade is outside the hydrated response window...
-    assert all(t["id"] != "old-trade" for t in patched.json()["trades"])
+    # The old trade is outside the hydrated snapshot window...
+    snapshot = client.get(f"/api/replay/sessions/{state.id}/state").json()
+    assert all(t["id"] != "old-trade" for t in snapshot["trades"])
     # ...but its review persisted and hydrates whenever the trade is served.
     reviews = repository.get_trade_reviews(["old-trade"])
     assert reviews["old-trade"] == ("old but reviewable", [])

@@ -71,20 +71,35 @@ class Trade:
     exit_window_start: datetime | None = None
     exit_window_end: datetime | None = None
     final_exit_reason: str | None = None
-    # Close-based excursions: the most favorable / adverse gross P&L observed
-    # at causally revealed candle closes while the trade remained open. Measured
-    # from the reference entry price; a stop/target close on a candle excludes
-    # that candle's close because the intrabar touch order is unknown. None on
-    # legacy trades (never measured); 0.0 on a new trade that never went in
-    # favor. These are OHLC-resolution metrics, not exact intrabar MAE/MFE.
+    # Close-based excursions, tracked from causally revealed candle closes
+    # while the trade remains open and never from a close after an intrabar
+    # stop/target already closed the trade. The stored basis is the *price*
+    # delta, signed from the trade's perspective (positive = favorable) and
+    # measured against the reference entry price: it does not change scale
+    # when partial exits change the remaining quantity. The gross P&L
+    # projections are the delta scaled by the trade's *initial* quantity
+    # (times multiplier and conversion rate), so they are stable across
+    # partial closes as well. All None on legacy trades, which were never
+    # measured; 0.0 on a new trade that never went in favor. These are
+    # OHLC-resolution metrics, not exact intrabar MAE/MFE.
     mfe_gross_pnl: float | None = None
     mae_gross_pnl: float | None = None
+    mfe_close_price_delta: float | None = None
+    mae_close_price_delta: float | None = None
     # Per-trade execution costs, booked incrementally by the entry and exit
-    # fills (never by scanning the fill ledger). Zero on legacy trades, whose
-    # fills carried no cost components.
+    # fills (never by scanning the fill ledger). Zero on legacy trades whose
+    # fills carried no cost components; schema v7 backfills them from the
+    # fill ledger when the ledger carries costs.
     total_commission: float = 0.0
     total_spread_cost: float = 0.0
     total_slippage_cost: float = 0.0
+    # The candle whose revealed close generated the market entry — the chart
+    # anchor for the entry marker. The execution timestamp itself is the
+    # reveal time (one minute later) and must not be used for chart
+    # alignment. None on legacy trades, whose recorded entry time was already
+    # the source candle's open; the API boundary normalizes that to the
+    # recorded time.
+    entry_source_candle_time: datetime | None = None
 
     def __post_init__(self) -> None:
         if self.entry_market_price is None:
@@ -118,6 +133,14 @@ class Fill:
     time_precision: TimePrecision | None = None
     execution_window_start: datetime | None = None
     execution_window_end: datetime | None = None
+    # The candle the execution belongs to, for chart rendering. Market-at-close
+    # executions anchor to the source candle whose revealed close generated the
+    # fill (one minute before the fill timestamp); gap and intrabar stop/target
+    # fills anchor to the touched candle's open (equal to the fill timestamp).
+    # The execution timestamp must not be overloaded for this purpose. None on
+    # legacy fills, whose recorded timestamp was already the source candle's
+    # open; the API boundary normalizes that to the recorded time.
+    source_candle_time: datetime | None = None
 
     def __post_init__(self) -> None:
         if self.market_price is None:
@@ -132,10 +155,14 @@ class StatsAccumulator:
 
     Booked transactionally alongside the authoritative mutation (entry/exit
     fills and final trade closes), so routine state responses never scan the
-    historical fill or trade tables. `r_values` holds the realized R of every
-    closed R-bearing trade in close order (bounded by the number of trades,
-    never by the number of fills) and powers the median. Legacy sessions are
-    backfilled once by schema migration v6 from the normalized tables.
+    historical fill or trade table. Every field is a constant-size aggregate
+    (counts and sums), so the persisted snapshot never grows with session
+    length: realized-R statistics keep only the count, the total, and the
+    winning/losing sums — no per-trade R list — and the median is
+    deliberately not maintained (an exact median would require keeping every
+    R value). Legacy sessions are backfilled once by schema migration v6 from
+    the normalized tables; snapshots that still carry the old `r_values` list
+    are converted exactly to these aggregates on load.
     """
     trades_opened: int = 0
     trades_completed: int = 0
@@ -158,18 +185,37 @@ class StatsAccumulator:
     max_realized_drawdown: float = 0.0
     # Sum of (final exit time - entry time) over closed trades, in seconds.
     holding_seconds_sum: float = 0.0
-    r_values: list[float] = field(default_factory=list)
+    # Realized-R aggregates over closed trades that had an initial risk.
+    r_count: int = 0
+    r_sum: float = 0.0
+    winning_r_count: int = 0
+    winning_r_sum: float = 0.0
+    losing_r_count: int = 0
+    losing_r_sum: float = 0.0
 
     @classmethod
     def from_mapping(cls, value: dict[str, object]) -> "StatsAccumulator":
         """Build from a persisted snapshot dict, tolerating missing (legacy) and
-        unknown (future) keys so old and newer databases both load safely."""
+        unknown (future) keys so old and newer databases both load safely.
+
+        Snapshots persisted while the accumulator still stored the raw
+        `r_values` list are converted exactly to the constant aggregates
+        (count, total, and per-outcome sums); the list itself is never kept in
+        memory.
+        """
         kwargs: dict[str, object] = {}
         for item in fields(cls):
             if item.name in value:
                 kwargs[item.name] = value[item.name]
-        r_values = kwargs.get("r_values", [])
-        kwargs["r_values"] = [float(item) for item in r_values]
+        if "r_count" not in value and "r_values" in value:
+            r_values = [float(item) for item in value["r_values"]]
+            kwargs["r_count"] = len(r_values)
+            kwargs["r_sum"] = sum(r_values)
+            kwargs["winning_r_count"] = sum(1 for item in r_values if item > 0)
+            kwargs["winning_r_sum"] = sum(item for item in r_values if item > 0)
+            kwargs["losing_r_count"] = sum(1 for item in r_values if item < 0)
+            kwargs["losing_r_sum"] = sum(item for item in r_values if item < 0)
+        kwargs.pop("r_values", None)
         return cls(**kwargs)
 
 
@@ -209,8 +255,12 @@ class ReplayState:
     # Incremental session statistics, persisted with the snapshot and booked
     # transactionally with each mutation; routine reads never scan history.
     accumulator: StatsAccumulator = field(default_factory=StatsAccumulator)
-    # Hydrated history totals from the normalized tables. Excluded from the
-    # persisted snapshot (recomputed at load/save); a fresh state has none.
+    # History totals, maintained incrementally by the execution engine (one
+    # increment per persisted fill/trade) and persisted with the snapshot so a
+    # routine load never runs a full-session COUNT. The normalized `trades`
+    # and `fills` tables remain the authoritative history; these are exact
+    # counts of them. Legacy snapshots without persisted totals are
+    # recomputed from the tables once at load.
     closed_trades_total: int = 0
     fills_total: int = 0
 
@@ -253,6 +303,8 @@ def serializable(value: object) -> object:
     if isinstance(value, dict):
         return {key: serializable(item) for key, item in value.items()}
     return value
+
+
 def state_snapshot(state: "ReplayState") -> dict[str, object]:
     """Serializable state snapshot without the normalized trade/fill histories.
 
@@ -261,10 +313,11 @@ def state_snapshot(state: "ReplayState") -> dict[str, object]:
     even for sessions with very long trade histories. The normalized `trades`
     and `fills` tables are authoritative; `load_session` reconstructs the open
     set plus bounded recent windows from them. `closed_trades_total` and
-    `fills_total` are hydrated metadata, recomputed at load/save, never stored.
+    `fills_total` are persisted here (small integers maintained incrementally)
+    so routine loads never count the tables.
     """
     return {
         item.name: serializable(getattr(state, item.name))
         for item in fields(state)
-        if item.name not in ("trades", "fills", "closed_trades_total", "fills_total")
+        if item.name not in ("trades", "fills")
     }

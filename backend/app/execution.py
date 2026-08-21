@@ -27,12 +27,17 @@ def _execution_price(state: ReplayState, market_price: float, direction: str, is
 
 
 def open_trade(state: ReplayState, now: datetime, price: float, direction: str, quantity: float,
-               stop_price: float | None, target_price: float | None, contract_multiplier: float) -> Trade:
+               stop_price: float | None, target_price: float | None, contract_multiplier: float,
+               source_candle_time: datetime | None = None) -> Trade:
     """Open a market trade at a causally revealed price.
 
     `now` is the caller's causal execution time: for a market entry this is
     the reveal time of the latest revealed candle (its close), so the entry
     fill and the trade's entry time carry the exact close timestamp.
+    `source_candle_time` is the candle whose revealed close generated the
+    entry — the chart anchor for the entry marker (its open time, one minute
+    before `now`); the execution timestamp itself is never repurposed for
+    chart alignment.
     """
     _require_finite(price, "price")
     _require_finite_positive(quantity, "quantity")
@@ -57,8 +62,11 @@ def open_trade(state: ReplayState, now: datetime, price: float, direction: str, 
     if not all(isfinite(value) for value in derived):
         raise ValueError("derived entry values must be finite")
     trade = Trade(str(uuid4()), state.id, direction, quantity, quantity, now, execution_price, stop_price,
-                  target_price, risk, entry_market_price=price, mfe_gross_pnl=0.0, mae_gross_pnl=0.0,
-                  total_commission=commission, total_spread_cost=spread_cost, total_slippage_cost=slippage_cost)
+                  target_price, risk, entry_market_price=price,
+                  mfe_gross_pnl=0.0, mae_gross_pnl=0.0,
+                  mfe_close_price_delta=0.0, mae_close_price_delta=0.0,
+                  total_commission=commission, total_spread_cost=spread_cost, total_slippage_cost=slippage_cost,
+                  entry_source_candle_time=source_candle_time)
     state.trades.append(trade)
     # Entry carries no gross P&L; its net is the negative of the entry-side costs,
     # charged exactly once and booked into realized P&L immediately.
@@ -69,7 +77,9 @@ def open_trade(state: ReplayState, now: datetime, price: float, direction: str, 
         pnl=0.0 - costs, market_price=price, gross_pnl=0.0,
         commission=commission, spread_cost=spread_cost, slippage_cost=slippage_cost,
         time_precision="exact", execution_window_start=now, execution_window_end=now,
+        source_candle_time=source_candle_time,
     ))
+    state.fills_total += 1
     state.accumulator.trades_opened += 1
     book_fill(state, direction, state.fills[-1])
     return trade
@@ -79,7 +89,8 @@ def close_trade(state: ReplayState, trade: Trade, now: datetime, price: float, q
                 reason: str, contract_multiplier: float,
                 precision: TimePrecision = "exact",
                 window_start: datetime | None = None,
-                window_end: datetime | None = None) -> Fill:
+                window_end: datetime | None = None,
+                source_candle_time: datetime | None = None) -> Fill:
     """Close `quantity` of a trade at a causally revealed price.
 
     `now` plus `precision`/`window_start`/`window_end` express the known
@@ -87,8 +98,12 @@ def close_trade(state: ReplayState, trade: Trade, now: datetime, price: float, q
     opening-gap stops/targets) collapse the window onto `now`; bar_interval
     fills (ordinary intrabar stop/target touches) keep `now` as the effective
     ordering time (the candle open) and expose the candle interval as the
-    execution window. When the remaining quantity reaches exactly zero the
-    trade's final-exit metadata and trade-level statistics are persisted.
+    execution window. `source_candle_time` is the candle the execution
+    belongs to for chart rendering (the touched candle's open for
+    stop/target fills, the revealed candle for manual closes); the execution
+    timestamp is never repurposed for chart alignment. When the remaining
+    quantity reaches exactly zero the trade's final-exit metadata and
+    trade-level statistics are persisted.
     """
     _require_finite(price, "price")
     _require_finite_positive(quantity, "quantity")
@@ -114,6 +129,7 @@ def close_trade(state: ReplayState, trade: Trade, now: datetime, price: float, q
         pnl=net_pnl, market_price=price, gross_pnl=gross_pnl,
         commission=commission, spread_cost=spread_cost, slippage_cost=slippage_cost,
         time_precision=precision, execution_window_start=window_start, execution_window_end=window_end,
+        source_candle_time=source_candle_time,
     )
     trade.remaining_quantity -= quantity
     trade.realized_pnl += net_pnl
@@ -133,8 +149,10 @@ def close_trade(state: ReplayState, trade: Trade, now: datetime, price: float, q
         trade.exit_window_end = window_end
         trade.final_exit_reason = reason
     state.fills.append(fill)
+    state.fills_total += 1
     book_fill(state, trade.direction, fill)
     if trade.status == "closed":
+        state.closed_trades_total += 1
         book_trade_close(state, trade, now)
     return fill
 
@@ -199,19 +217,23 @@ def process_bar(state: ReplayState, bar: Bar, contract_multiplier: float) -> Non
         if target_fill is not None and _target_crossed_at_open(trade, bar):
             close_trade(state, trade, bar.timestamp, target_fill, trade.remaining_quantity, "target",
                         contract_multiplier, precision="exact",
-                        window_start=bar.timestamp, window_end=bar.timestamp)
+                        window_start=bar.timestamp, window_end=bar.timestamp,
+                        source_candle_time=bar.timestamp)
         elif stop_fill is not None and _stop_crossed_at_open(trade, bar):
             close_trade(state, trade, bar.timestamp, stop_fill, trade.remaining_quantity, "stop",
                         contract_multiplier, precision="exact",
-                        window_start=bar.timestamp, window_end=bar.timestamp)
+                        window_start=bar.timestamp, window_end=bar.timestamp,
+                        source_candle_time=bar.timestamp)
         elif stop_fill is not None:
             close_trade(state, trade, bar.timestamp, stop_fill, trade.remaining_quantity, "stop",
                         contract_multiplier, precision="bar_interval",
-                        window_start=bar.timestamp, window_end=bar_reveal_time(bar))
+                        window_start=bar.timestamp, window_end=bar_reveal_time(bar),
+                        source_candle_time=bar.timestamp)
         else:
             close_trade(state, trade, bar.timestamp, target_fill, trade.remaining_quantity, "target",
                         contract_multiplier, precision="bar_interval",
-                        window_start=bar.timestamp, window_end=bar_reveal_time(bar))
+                        window_start=bar.timestamp, window_end=bar_reveal_time(bar),
+                        source_candle_time=bar.timestamp)
 
 
 def update_close_excursions(state: ReplayState, bar: Bar, contract_multiplier: float) -> None:
@@ -219,20 +241,23 @@ def update_close_excursions(state: ReplayState, bar: Bar, contract_multiplier: f
 
     Must run after `process_bar` for the same candle, so a close-based
     excursion never includes a candle whose intrabar stop/target already
-    closed the trade. Measured gross P&L at the reference entry price over
-    the remaining quantity; OHLC-resolution only, not an exact intrabar path.
-    A trade whose excursion was never measured (legacy) starts from this
-    first observed close.
+    closed the trade. The stored basis is the close-to-entry *price* delta
+    (signed from the trade's perspective, against the reference entry price);
+    the gross P&L projections scale that delta by the trade's *initial*
+    quantity, so partial exits never change the reported excursions. OHLC
+    resolution only, not an exact intrabar path. A trade whose excursion was
+    never measured (legacy) starts from this first observed close.
     """
     for trade in state.trades:
         if trade.status != "open" or trade.remaining_quantity <= 0:
             continue
-        sign = 1 if trade.direction == "long" else -1
-        gross = sign * (bar.close - trade.entry_market_price) * trade.remaining_quantity \
-            * contract_multiplier * state.conversion_rate
-        if trade.mfe_gross_pnl is None:
-            trade.mfe_gross_pnl = gross
-            trade.mae_gross_pnl = gross
+        delta = (bar.close - trade.entry_market_price) if trade.direction == "long" else (trade.entry_market_price - bar.close)
+        if trade.mfe_close_price_delta is None:
+            trade.mfe_close_price_delta = delta
+            trade.mae_close_price_delta = delta
         else:
-            trade.mfe_gross_pnl = max(trade.mfe_gross_pnl, gross)
-            trade.mae_gross_pnl = min(trade.mae_gross_pnl, gross)
+            trade.mfe_close_price_delta = max(trade.mfe_close_price_delta, delta)
+            trade.mae_close_price_delta = min(trade.mae_close_price_delta, delta)
+        scale = trade.initial_quantity * contract_multiplier * state.conversion_rate
+        trade.mfe_gross_pnl = trade.mfe_close_price_delta * scale
+        trade.mae_gross_pnl = trade.mae_close_price_delta * scale

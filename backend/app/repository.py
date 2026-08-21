@@ -50,8 +50,8 @@ _STATE_CACHE_MAX = 8
 
 _TRADE_FIELDS = tuple(item.name for item in fields(Trade))
 
-_TRADE_DATETIME_FIELDS = ("exit_time", "exit_window_start", "exit_window_end")
-_FILL_DATETIME_FIELDS = ("execution_window_start", "execution_window_end")
+_TRADE_DATETIME_FIELDS = ("entry_source_candle_time", "exit_time", "exit_window_start", "exit_window_end")
+_FILL_DATETIME_FIELDS = ("source_candle_time", "execution_window_start", "execution_window_end")
 
 
 def _trade_fingerprint(trade: Trade) -> tuple:
@@ -117,6 +117,21 @@ def _parse_fill(payload: dict[str, object]) -> Fill:
     return Fill(**payload)
 
 
+def _prune_working_set(state: ReplayState) -> None:
+    """Trim the in-memory history to the working-set bounds after a successful
+    save. Every open trade is always retained; only the most recent closed
+    trades and fills stay in memory, matching the response caps. The normalized
+    tables were committed before this runs, so pruned rows are neither lost nor
+    rewritten: they are no longer in the in-memory state, the save tracker no
+    longer references them, and nothing interprets their absence as a delete.
+    """
+    closed = [trade for trade in state.trades if trade.status == "closed"]
+    if len(closed) > RECENT_CLOSED_TRADES_LIMIT:
+        keep = {trade.id for trade in state.trades if trade.status == "open"}
+        keep.update(trade.id for trade in closed[-RECENT_CLOSED_TRADES_LIMIT:])
+        state.trades = [trade for trade in state.trades if trade.id in keep]
+    if len(state.fills) > RECENT_FILLS_LIMIT:
+        state.fills = state.fills[-RECENT_FILLS_LIMIT:]
 def save_session(state: ReplayState, event_type: str, payload: dict[str, object] | None = None,
                  orders: list[dict[str, object]] | None = None) -> None:
     """Persist the session snapshot, event, trades, fills, indicators and optional
@@ -197,15 +212,9 @@ def save_session(state: ReplayState, event_type: str, payload: dict[str, object]
                     (str(uuid4()), state.id, order.get("trade_id"), order["order_type"],
                      json.dumps(order["payload"], allow_nan=False), now),
                 )
-            # Hydrated history totals are recomputed from the authoritative
-            # tables inside the same transaction so the in-memory state always
-            # matches what committed.
-            state.closed_trades_total = db.execute(
-                "SELECT COUNT(*) FROM trades WHERE session_id=? AND status='closed'", (state.id,)
-            ).fetchone()[0]
-            state.fills_total = db.execute(
-                "SELECT COUNT(*) FROM fills WHERE session_id=?", (state.id,)
-            ).fetchone()[0]
+            # History totals are maintained incrementally by the execution
+            # engine (persisted in the snapshot above), so no full-session
+            # COUNT runs on the hot save path.
     except BaseException:
         # The transaction rolled back; restore the in-memory revision so the
         # caller's state still matches the stored row and its next save CASes
@@ -217,7 +226,12 @@ def save_session(state: ReplayState, event_type: str, payload: dict[str, object]
     # Only a committed save may advance the tracking; a failure above (stale CAS
     # or any post-CAS error) rolls the transaction back and leaves the record
     # untouched, so nothing that was never persisted is ever skipped later.
-    _PERSISTED_ROWS[state.id] = (state.revision, frozenset(fill.id for fill in state.fills), trade_fps)
+    _prune_working_set(state)
+    _PERSISTED_ROWS[state.id] = (
+        state.revision,
+        frozenset(fill.id for fill in state.fills),
+        {trade.id: trade_fps[trade.id] for trade in state.trades},
+    )
     _PERSISTED_ROWS.move_to_end(state.id)
     while len(_PERSISTED_ROWS) > _PERSISTED_ROWS_MAX:
         _PERSISTED_ROWS.popitem(last=False)
@@ -229,9 +243,13 @@ def load_session(session_id: str) -> ReplayState | None:
 
     Loads the snapshot, every open trade, the most recent closed trades and
     fills (the same bounds the response history is capped to), and the history
-    totals from indexed counts. The complete closed/fill history stays in the
-    normalized tables, reachable only through the bounded recent-history and
-    paginated queries — never reconstructed in full on routine reads.
+    totals from the snapshot (maintained incrementally by the engine and
+    persisted with it) so a routine load never counts the tables. Only a
+    legacy snapshot that predates persisted totals falls back to one indexed
+    COUNT each, and only on the cold load. The complete closed/fill history
+    stays in the normalized tables, reachable only through the bounded
+    recent-history and paginated queries — never reconstructed in full on
+    routine reads.
     """
     with connect() as db:
         row = db.execute("SELECT state_json, revision FROM replay_sessions WHERE id=?", (session_id,)).fetchone()
@@ -257,18 +275,19 @@ def load_session(session_id: str) -> ReplayState | None:
             "SELECT fill_json FROM fills WHERE session_id=? ORDER BY rowid DESC LIMIT ?",
             (session_id, RECENT_FILLS_LIMIT)
         ).fetchall()
-        closed_total = db.execute(
-            "SELECT COUNT(*) FROM trades WHERE session_id=? AND status='closed'", (session_id,)
-        ).fetchone()[0]
-        fills_total = db.execute(
-            "SELECT COUNT(*) FROM fills WHERE session_id=?", (session_id,)
-        ).fetchone()[0]
+        if state.closed_trades_total == 0 and state.fills_total == 0 and (trade_rows or closed_rows or fill_rows):
+            # Legacy snapshot that predates persisted totals: count once on the
+            # cold load only; every save since then persists exact totals.
+            state.closed_trades_total = db.execute(
+                "SELECT COUNT(*) FROM trades WHERE session_id=? AND status='closed'", (session_id,)
+            ).fetchone()[0]
+            state.fills_total = db.execute(
+                "SELECT COUNT(*) FROM fills WHERE session_id=?", (session_id,)
+            ).fetchone()[0]
     if trade_rows or closed_rows or fill_rows:
         state.trades = [_parse_trade(json.loads(item["trade_json"])) for item in trade_rows]
         state.trades.extend(reversed([_parse_trade(json.loads(item["trade_json"])) for item in closed_rows]))
         state.fills = list(reversed([_parse_fill(json.loads(item["fill_json"])) for item in fill_rows]))
-        state.closed_trades_total = closed_total
-        state.fills_total = fills_total
     else:
         # Backward compatibility: a legacy snapshot with no normalized rows yet.
         state.trades = [
@@ -322,63 +341,86 @@ def all_trades(session_id: str) -> list[Trade]:
     return [_parse_trade(json.loads(item["trade_json"])) for item in rows]
 
 
+def _validate_cursor(db: sqlite3.Connection, table: str, session_id: str, cursor: str) -> int:
+    """Resolve a history cursor to the rowid that pages before it.
+
+    The cursor is the id of the last row of the previous page. It must exist
+    in the given table and belong to this session; an unknown id or a cursor
+    borrowed from another session raises ValueError so it can never silently
+    page the wrong history.
+    """
+    row = db.execute(f"SELECT rowid, session_id FROM {table} WHERE id=?", (cursor,)).fetchone()
+    if row is None:
+        raise ValueError("unknown history cursor")
+    if row["session_id"] != session_id:
+        raise ValueError("history cursor does not belong to this session")
+    return row["rowid"]
+
+
 def list_trades(session_id: str, status: str | None, limit: int,
                 cursor: str | None = None) -> tuple[list[Trade], int, str | None]:
     """One deterministic page of trades, newest first (rowid descending).
 
     `cursor` is the id of the last item of the previous page; the page is the
-    trades with a lower rowid, so pages are stable under concurrent appends.
-    Returns (items, total, next_cursor) where next_cursor is None on the last
-    page. `status` is "open" or "closed"; None means all trades.
+    trades with a lower rowid, so pages are stable under concurrent appends,
+    never overlap, and never skip older rows. Returns (items, total,
+    next_cursor); `next_cursor` is set only when a further non-empty page
+    exists (the query fetches `limit + 1` rows to decide this, so the read
+    stays bounded). `status` is "open" or "closed"; None means all trades.
+    An unknown or foreign-session cursor raises ValueError.
     """
-    clauses = ["session_id=?"]
-    params: list[object] = [session_id]
-    if status is not None:
-        if status not in ("open", "closed"):
-            raise ValueError("status must be 'open' or 'closed'")
-        clauses.append("status=?")
-        params.append(status)
-    if cursor is not None:
-        clauses.append("rowid < (SELECT rowid FROM trades WHERE id=?)")
-        params.append(cursor)
-    params.append(limit)
+    if status is not None and status not in ("open", "closed"):
+        raise ValueError("status must be 'open' or 'closed'")
     with connect() as db:
+        clauses = ["session_id=?"]
+        params: list[object] = [session_id]
+        if status is not None:
+            clauses.append("status=?")
+            params.append(status)
+        if cursor is not None:
+            clauses.append("rowid < ?")
+            params.append(_validate_cursor(db, "trades", session_id, cursor))
+        params.append(limit + 1)
         rows = db.execute(
             f"SELECT trade_json FROM trades WHERE {' AND '.join(clauses)} ORDER BY rowid DESC LIMIT ?",
             tuple(params),
         ).fetchall()
-        count_clauses = ["session_id=?"]
-        count_params: list[object] = [session_id]
-        if status is not None:
-            count_clauses.append("status=?")
-            count_params.append(status)
         total = db.execute(
-            f"SELECT COUNT(*) FROM trades WHERE {' AND '.join(count_clauses)}", tuple(count_params)
-        ).fetchone()[0]
-    items = [_parse_trade(json.loads(item["trade_json"])) for item in rows]
-    next_cursor = items[-1].id if len(items) == limit and items else None
+            f"SELECT COUNT(*) FROM trades WHERE session_id=? AND status='closed'", (session_id,)
+        ).fetchone()[0] if status == "closed" else (
+            db.execute(
+                f"SELECT COUNT(*) FROM trades WHERE session_id=? AND status='open'", (session_id,)
+            ).fetchone()[0] if status == "open" else
+            db.execute("SELECT COUNT(*) FROM trades WHERE session_id=?", (session_id,)).fetchone()[0]
+        )
+    has_more = len(rows) > limit
+    items = [_parse_trade(json.loads(item["trade_json"])) for item in rows[:limit]]
+    next_cursor = items[-1].id if has_more and items else None
     return items, total, next_cursor
 
 
 def list_fills(session_id: str, limit: int, cursor: str | None = None) -> tuple[list[Fill], int, str | None]:
     """One deterministic page of fills, newest first (rowid descending).
 
-    Same cursor contract as `list_trades`.
+    Same cursor contract as `list_trades`, including the bounded
+    `limit + 1` read that decides whether a further non-empty page exists,
+    and explicit rejection of an unknown or foreign-session cursor.
     """
-    clauses = ["session_id=?"]
-    params: list[object] = [session_id]
-    if cursor is not None:
-        clauses.append("rowid < (SELECT rowid FROM fills WHERE id=?)")
-        params.append(cursor)
-    params.append(limit)
     with connect() as db:
+        clauses = ["session_id=?"]
+        params: list[object] = [session_id]
+        if cursor is not None:
+            clauses.append("rowid < ?")
+            params.append(_validate_cursor(db, "fills", session_id, cursor))
+        params.append(limit + 1)
         rows = db.execute(
             f"SELECT fill_json FROM fills WHERE {' AND '.join(clauses)} ORDER BY rowid DESC LIMIT ?",
             tuple(params),
         ).fetchall()
         total = db.execute("SELECT COUNT(*) FROM fills WHERE session_id=?", (session_id,)).fetchone()[0]
-    items = [_parse_fill(json.loads(item["fill_json"])) for item in rows]
-    next_cursor = items[-1].id if len(items) == limit and items else None
+    has_more = len(rows) > limit
+    items = [_parse_fill(json.loads(item["fill_json"])) for item in rows[:limit]]
+    next_cursor = items[-1].id if has_more and items else None
     return items, total, next_cursor
 
 
@@ -389,6 +431,18 @@ def get_trade(session_id: str, trade_id: str) -> Trade | None:
         ).fetchone()
     return _parse_trade(json.loads(row["trade_json"])) if row else None
 
+
+def get_trade_fills(session_id: str, trade_id: str) -> list[Fill]:
+    """Every fill of one trade in insertion (rowid) order, bounded by the trade's
+    own ledger (a trade produces at most a handful of fills, so this is always
+    small). Used by the chart-history focus endpoint to draw markers for a
+    trade that is no longer in the bounded in-memory working set."""
+    with connect() as db:
+        rows = db.execute(
+            "SELECT fill_json FROM fills WHERE session_id=? AND trade_id=? ORDER BY rowid",
+            (session_id, trade_id),
+        ).fetchall()
+    return [_parse_fill(json.loads(item["fill_json"])) for item in rows]
 
 def upsert_trade_review(session_id: str, trade_id: str, note: str, tags: list[str]) -> dict[str, object]:
     """Persist the user review (note + tags) for one trade of a session."""

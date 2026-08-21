@@ -124,6 +124,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/replay/sessions/{session_id}/fills": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Session Fills
+         * @description One bounded page of the session's fill history (newest first).
+         */
+        get: operations["session_fills_api_replay_sessions__session_id__fills_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/replay/sessions/{session_id}/indicators/{indicator_id}/toggle": {
         parameters: {
             query?: never;
@@ -220,6 +240,49 @@ export interface paths {
         put?: never;
         /** Session Step */
         post: operations["session_step_api_replay_sessions__session_id__step_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/replay/sessions/{session_id}/trades": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Session Trades
+         * @description One bounded page of the session's trade history (newest first).
+         *
+         *     Closed trades include review notes/tags; an unknown or foreign-session
+         *     cursor is rejected with 400.
+         */
+        get: operations["session_trades_api_replay_sessions__session_id__trades_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/replay/sessions/{session_id}/trades/{trade_id}/chart-history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Session Trade Chart
+         * @description A bounded historical chart window anchored around one (possibly old) trade.
+         */
+        get: operations["session_trade_chart_api_replay_sessions__session_id__trades__trade_id__chart_history_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -352,6 +415,28 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * ChartHistoryResponse
+         * @description A bounded historical chart window anchored around one (possibly old)
+         *     trade.
+         *
+         *     The window holds enough source candles around the trade for the chart to
+         *     focus on it; it never loads the entire session's chart and does not
+         *     recreate the chart instance on the client. The trade's own fills come
+         *     from the authoritative fill ledger (the trade may no longer be in the
+         *     bounded in-memory working set).
+         */
+        ChartHistoryResponse: {
+            /** Displayed Bars */
+            displayed_bars: components["schemas"]["DisplayBar"][];
+            /** Fills */
+            fills: components["schemas"]["Fill"][];
+            /** Indicators */
+            indicators: {
+                [key: string]: components["schemas"]["IndicatorPoint"][];
+            };
+            trade: components["schemas"]["Trade"];
+        };
         /** CloseRequest */
         CloseRequest: {
             /** Quantity */
@@ -415,6 +500,8 @@ export interface components {
             session_id: string;
             /** Slippage Cost */
             slippage_cost: number;
+            /** Source Candle Time */
+            source_candle_time: string;
             /** Spread Cost */
             spread_cost: number;
             /**
@@ -426,6 +513,20 @@ export interface components {
             timestamp: string;
             /** Trade Id */
             trade_id: string;
+        };
+        /**
+         * FillHistoryPage
+         * @description One page of a session's fill history (newest first, cursor-based).
+         *
+         *     `next_cursor` is null on the final page.
+         */
+        FillHistoryPage: {
+            /** Items */
+            items: components["schemas"]["Fill"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+            /** Total */
+            total: number;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -568,6 +669,177 @@ export interface components {
             /** Session Id */
             session_id: string;
         };
+        /**
+         * ReplaySnapshot
+         * @description The full bounded authoritative state of a session.
+         *
+         *     Sent on session creation, resume, and explicit refresh/reconciliation.
+         *     `revision` is the persisted revision the snapshot was read from. History
+         *     is bounded: every open trade plus the most recent closed trades and
+         *     fills; the `*_total` fields and truncation flags say how much more
+         *     exists in the authoritative tables (fetched via the history endpoints).
+         *     The internal statistics accumulator is never exposed.
+         */
+        ReplaySnapshot: {
+            /** Account Currency */
+            account_currency: string;
+            /** Advance Step Minutes */
+            advance_step_minutes: number;
+            /** Chart Context 1M Bars */
+            chart_context_1m_bars: number;
+            /** Closed Trades Total */
+            closed_trades_total: number;
+            /** Closed Trades Truncated */
+            closed_trades_truncated: boolean;
+            /** Commission Per Quantity */
+            commission_per_quantity: number;
+            /** Contract Multiplier */
+            contract_multiplier?: number | null;
+            /** Conversion Rate */
+            conversion_rate: number;
+            /** Current Candle Time */
+            current_candle_time: string | null;
+            /** Current Index */
+            current_index: number;
+            /** Current Market Time */
+            current_market_time: string | null;
+            /** Current Price */
+            current_price: number | null;
+            /** Data Version */
+            data_version?: string | null;
+            /** Displayed Bars */
+            displayed_bars: components["schemas"]["DisplayBar"][];
+            /** Enabled Indicators */
+            enabled_indicators: string[];
+            /** End */
+            end: string;
+            /** Fills */
+            fills: components["schemas"]["Fill"][];
+            /** Fills Total */
+            fills_total: number;
+            /** Fills Truncated */
+            fills_truncated: boolean;
+            /** Id */
+            id: string;
+            /** Indicator Warmup Margin */
+            indicator_warmup_margin: number;
+            /** Indicators */
+            indicators: {
+                [key: string]: components["schemas"]["IndicatorPoint"][];
+            };
+            /** Initial Balance */
+            initial_balance: number;
+            /** Pnl Currency */
+            pnl_currency?: string | null;
+            /** Price Precision */
+            price_precision?: number | null;
+            /** Profile */
+            profile: string;
+            /** Remaining Bars */
+            remaining_bars: number;
+            /** Revision */
+            revision: number;
+            /** Slippage */
+            slippage: number;
+            /** Spread */
+            spread: number;
+            /** Start */
+            start: string;
+            stats: components["schemas"]["SessionStats"];
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "active" | "completed";
+            /** Symbol */
+            symbol: string;
+            /** Trades */
+            trades: components["schemas"]["Trade"][];
+            /** Visible Timeframe */
+            visible_timeframe: string;
+            /** Warnings */
+            warnings: string[];
+        };
+        /**
+         * ReplayUpdate
+         * @description A mutation delta for an installed snapshot.
+         *
+         *     Sent by every replay mutation (step, orders, closes, stop/target moves,
+         *     settings, indicator toggles). `revision` is the revision the mutation
+         *     committed (after the commit, never a speculative in-memory value), so a
+         *     client can reject stale updates (`revision <= installed`), apply the
+         *     next one (`revision == installed + 1`), and fetch a fresh snapshot on a
+         *     gap (`revision > installed + 1`). The chart remains a full bounded
+         *     payload; the history is delta-based.
+         */
+        ReplayUpdate: {
+            /** Advance Step Minutes */
+            advance_step_minutes: number;
+            /** Closed Trades Total */
+            closed_trades_total: number;
+            /** Current Candle Time */
+            current_candle_time: string | null;
+            /** Current Index */
+            current_index: number;
+            /** Current Market Time */
+            current_market_time: string | null;
+            /** Current Price */
+            current_price: number | null;
+            /** Displayed Bars */
+            displayed_bars: components["schemas"]["DisplayBar"][];
+            /** Enabled Indicators */
+            enabled_indicators: string[];
+            /** Fills Total */
+            fills_total: number;
+            /** Id */
+            id: string;
+            /** Indicators */
+            indicators: {
+                [key: string]: components["schemas"]["IndicatorPoint"][];
+            };
+            /** New Fills */
+            new_fills: components["schemas"]["Fill"][];
+            /** Newly Closed Trades */
+            newly_closed_trades: components["schemas"]["Trade"][];
+            /** Remaining Bars */
+            remaining_bars: number;
+            /** Revision */
+            revision: number;
+            stats: components["schemas"]["SessionStats"];
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "active" | "completed";
+            /** Trade Removals From Open */
+            trade_removals_from_open: string[];
+            /** Trade Upserts */
+            trade_upserts: components["schemas"]["Trade"][];
+            /** Visible Timeframe */
+            visible_timeframe: string;
+            /** Warnings */
+            warnings: string[];
+        };
+        /**
+         * ReviewRecord
+         * @description The persisted review (note + tags) for one trade.
+         *
+         *     Review mutations return this small dedicated record — not a replay
+         *     snapshot or update — because they change no replay state and must not
+         *     bump the session revision.
+         */
+        ReviewRecord: {
+            /** Note */
+            note: string;
+            /** Session Id */
+            session_id: string;
+            /** Tags */
+            tags: string[];
+            /** Trade Id */
+            trade_id: string;
+            /** Updated At */
+            updated_at: string;
+        };
         /** ReviewRequest */
         ReviewRequest: {
             /**
@@ -669,8 +941,6 @@ export interface components {
             long_pnl: number;
             /** Max Drawdown */
             max_drawdown: number;
-            /** Median R */
-            median_r: number;
             /** Net Pnl */
             net_pnl: number;
             /** Profit Factor */
@@ -718,178 +988,21 @@ export interface components {
             /** Visible Timeframe */
             visible_timeframe?: ("1m" | "5m" | "15m" | "1h" | "4h" | "1d") | null;
         };
-        /** StateResponse */
-        StateResponse: {
-            /** Account Currency */
-            account_currency: string;
-            accumulator: components["schemas"]["StatsAccumulator"];
-            /** Advance Step Minutes */
-            advance_step_minutes: number;
-            /** Chart Context 1M Bars */
-            chart_context_1m_bars: number;
-            /** Closed Trades Total */
-            closed_trades_total: number;
-            /** Closed Trades Truncated */
-            closed_trades_truncated: boolean;
-            /** Commission Per Quantity */
-            commission_per_quantity: number;
-            /** Contract Multiplier */
-            contract_multiplier: number | null;
-            /** Conversion Rate */
-            conversion_rate: number;
-            /** Current Candle Time */
-            current_candle_time: string | null;
-            /** Current Index */
-            current_index: number;
-            /** Current Market Time */
-            current_market_time: string | null;
-            /** Current Price */
-            current_price: number | null;
-            /** Data Version */
-            data_version: string | null;
-            /** Displayed Bars */
-            displayed_bars: components["schemas"]["DisplayBar"][];
-            /** Enabled Indicators */
-            enabled_indicators: string[];
-            /** End */
-            end: string;
-            /** Fills */
-            fills: components["schemas"]["Fill"][];
-            /** Fills Total */
-            fills_total: number;
-            /** Fills Truncated */
-            fills_truncated: boolean;
-            /** Id */
-            id: string;
-            /** Indicator Warmup Margin */
-            indicator_warmup_margin: number;
-            /** Indicators */
-            indicators: {
-                [key: string]: components["schemas"]["IndicatorPoint"][];
-            };
-            /** Initial Balance */
-            initial_balance: number;
-            /** Pnl Currency */
-            pnl_currency: string | null;
-            /** Price Precision */
-            price_precision: number | null;
-            /** Profile */
-            profile: string;
-            /** Remaining Bars */
-            remaining_bars: number;
-            /** Revision */
-            revision: number | null;
-            /** Slippage */
-            slippage: number;
-            /** Spread */
-            spread: number;
-            /** Start */
-            start: string;
-            stats: components["schemas"]["SessionStats"];
-            /**
-             * Status
-             * @enum {string}
-             */
-            status: "active" | "completed";
-            /** Symbol */
-            symbol: string;
-            /** Trades */
-            trades: components["schemas"]["Trade"][];
-            /** Visible Timeframe */
-            visible_timeframe: string;
-            /** Warnings */
-            warnings: string[];
-        };
-        /** StatsAccumulator */
-        StatsAccumulator: {
-            /**
-             * Commission Sum
-             * @default 0
-             */
-            commission_sum: number;
-            /**
-             * Gross Pnl Sum
-             * @default 0
-             */
-            gross_pnl_sum: number;
-            /**
-             * Holding Seconds Sum
-             * @default 0
-             */
-            holding_seconds_sum: number;
-            /**
-             * Long Pnl Sum
-             * @default 0
-             */
-            long_pnl_sum: number;
-            /**
-             * Losing Pnl Sum
-             * @default 0
-             */
-            losing_pnl_sum: number;
-            /**
-             * Losing Trades
-             * @default 0
-             */
-            losing_trades: number;
-            /**
-             * Max Realized Drawdown
-             * @default 0
-             */
-            max_realized_drawdown: number;
-            /**
-             * Net Pnl Sum
-             * @default 0
-             */
-            net_pnl_sum: number;
-            /** Peak Realized Balance */
-            peak_realized_balance?: number | null;
-            /** R Values */
-            r_values?: number[];
-            /**
-             * Short Pnl Sum
-             * @default 0
-             */
-            short_pnl_sum: number;
-            /**
-             * Slippage Cost Sum
-             * @default 0
-             */
-            slippage_cost_sum: number;
-            /**
-             * Spread Cost Sum
-             * @default 0
-             */
-            spread_cost_sum: number;
-            /**
-             * Trades Completed
-             * @default 0
-             */
-            trades_completed: number;
-            /**
-             * Trades Opened
-             * @default 0
-             */
-            trades_opened: number;
-            /**
-             * Winning Pnl Sum
-             * @default 0
-             */
-            winning_pnl_sum: number;
-            /**
-             * Winning Trades
-             * @default 0
-             */
-            winning_trades: number;
-        };
-        /** SymbolMetadata */
+        /**
+         * SymbolMetadata
+         * @description One symbol's current instrument/dataset metadata.
+         *
+         *     `data_version` is null on legacy rows published before immutable dataset
+         *     versions existed; such datasets are the then-current source and sessions
+         *     created from them pin no version.
+         */
         SymbolMetadata: {
             /** Asset Class */
             asset_class: string;
             /** Contract Multiplier */
             contract_multiplier: number;
             /** Data Version */
-            data_version: string;
+            data_version?: string | null;
             /** Default Profile */
             default_profile: string;
             /** First Timestamp */
@@ -933,9 +1046,11 @@ export interface components {
              */
             direction: "long" | "short";
             /** Entry Market Price */
-            entry_market_price: number | null;
+            entry_market_price: number;
             /** Entry Price */
             entry_price: number;
+            /** Entry Source Candle Time */
+            entry_source_candle_time: string;
             /** Entry Time */
             entry_time: string;
             /** Exit Market Price */
@@ -958,8 +1073,12 @@ export interface components {
             initial_quantity: number;
             /** Initial Risk */
             initial_risk: number | null;
+            /** Mae Close Price Delta */
+            mae_close_price_delta: number | null;
             /** Mae Gross Pnl */
             mae_gross_pnl: number | null;
+            /** Mfe Close Price Delta */
+            mfe_close_price_delta: number | null;
             /** Mfe Gross Pnl */
             mfe_gross_pnl: number | null;
             /** Realized Pnl */
@@ -990,6 +1109,21 @@ export interface components {
             total_slippage_cost: number;
             /** Total Spread Cost */
             total_spread_cost: number;
+        };
+        /**
+         * TradeHistoryPage
+         * @description One page of a session's trade history (newest first, cursor-based).
+         *
+         *     Closed trades include their review notes/tags and normalized legacy
+         *     timing; `next_cursor` is null on the final page.
+         */
+        TradeHistoryPage: {
+            /** Items */
+            items: components["schemas"]["Trade"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+            /** Total */
+            total: number;
         };
         /** ValidationError */
         ValidationError: {
@@ -1169,7 +1303,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["StateResponse"];
+                    "application/json": components["schemas"]["ReplaySnapshot"];
                 };
             };
             /** @description Validation Error */
@@ -1231,7 +1365,41 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["StateResponse"];
+                    "application/json": components["schemas"]["ReplayUpdate"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    session_fills_api_replay_sessions__session_id__fills_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FillHistoryPage"];
                 };
             };
             /** @description Validation Error */
@@ -1263,7 +1431,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["StateResponse"];
+                    "application/json": components["schemas"]["ReplayUpdate"];
                 };
             };
             /** @description Validation Error */
@@ -1298,7 +1466,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["StateResponse"];
+                    "application/json": components["schemas"]["ReplayUpdate"];
                 };
             };
             /** @description Validation Error */
@@ -1333,7 +1501,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["StateResponse"];
+                    "application/json": components["schemas"]["ReplayUpdate"];
                 };
             };
             /** @description Validation Error */
@@ -1364,7 +1532,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["StateResponse"];
+                    "application/json": components["schemas"]["ReplaySnapshot"];
                 };
             };
             /** @description Validation Error */
@@ -1426,7 +1594,76 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["StateResponse"];
+                    "application/json": components["schemas"]["ReplayUpdate"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    session_trades_api_replay_sessions__session_id__trades_get: {
+        parameters: {
+            query?: {
+                status?: "open" | "closed";
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TradeHistoryPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    session_trade_chart_api_replay_sessions__session_id__trades__trade_id__chart_history_get: {
+        parameters: {
+            query?: {
+                context_bars?: number;
+            };
+            header?: never;
+            path: {
+                session_id: string;
+                trade_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChartHistoryResponse"];
                 };
             };
             /** @description Validation Error */
@@ -1532,7 +1769,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["StateResponse"];
+                    "application/json": components["schemas"]["ReplayUpdate"];
                 };
             };
             /** @description Validation Error */
@@ -1567,7 +1804,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["StateResponse"];
+                    "application/json": components["schemas"]["ReviewRecord"];
                 };
             };
             /** @description Validation Error */
@@ -1602,7 +1839,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ReplayUpdate"];
                 };
             };
             /** @description Validation Error */
@@ -1637,7 +1874,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ReplayUpdate"];
                 };
             };
             /** @description Validation Error */

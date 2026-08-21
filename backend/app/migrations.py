@@ -21,8 +21,20 @@ Version history
     the normalized trade/fill tables (or the legacy embedded snapshot when the
     tables are empty).  Sessions whose normalized tables are non-empty also
     have the now-redundant embedded ``trades``/``fills`` arrays dropped from
-    ``state_json`` so the snapshot stays bounded.  Idempotent: sessions whose
-    snapshot already carries an accumulator are skipped.
+    ``state_json`` so the snapshot stays bounded.  The backfill reads rows
+    positionally (independent of the caller's ``row_factory``) and is strict:
+    a session that cannot be reconstructed exactly fails the whole migration
+    (the transaction rolls back and the version stays at 5) rather than
+    marking v6 complete with a missing accumulator.  Idempotent: sessions
+    whose snapshot already carries an accumulator are skipped.
+7.  Data: one-time exact backfill of the execution-cost and chart-anchor
+    metadata (fill ``source_candle_time``, per-trade cost totals, legacy
+    ``entry_market_price`` / ``entry_source_candle_time`` / final-exit
+    metadata) from information the existing ledger rows already carry.
+    Already-complete rows are left byte-for-byte untouched, and sessions
+    still missing an accumulator (a v6 database with an unparseable embedded
+    snapshot) are backfilled from the repaired ledger with the same strict
+    failure semantics as v6.
 
 Version metadata is stored in a ``schema_meta`` key/value table.  Databases
 that predate the metadata (or were created without it) are baselined from their
@@ -40,7 +52,7 @@ from __future__ import annotations
 
 import sqlite3
 
-CURRENT_SCHEMA_VERSION = 6
+CURRENT_SCHEMA_VERSION = 7
 
 _VERSION_KEY = "schema_version"
 
@@ -271,6 +283,14 @@ def _migrate_v6_stats_accumulator(connection: sqlite3.Connection) -> None:
     identical to a full-history scan. When the tables are authoritative the
     redundant embedded ``trades``/``fills`` arrays are dropped from
     ``state_json`` so the snapshot stays bounded.
+
+    The backfill is strict: rows are read positionally (never via the
+    caller's `row_factory`, which may be plain tuples for restore/migration
+    connections), and any session that should be backfilled but cannot be
+    reconstructed exactly raises, so the whole v6 transaction rolls back and
+    the schema version stays at 5. A session that silently missed its
+    accumulator would later hydrate only the bounded recent working set and
+    report incomplete historical statistics.
     """
     import json
     from dataclasses import asdict
@@ -281,44 +301,146 @@ def _migrate_v6_stats_accumulator(connection: sqlite3.Connection) -> None:
 
     for row in connection.execute("SELECT id, state_json FROM replay_sessions"):
         session_id = row[0]
-        try:
-            value = json.loads(row[1])
-            if not isinstance(value, dict) or "accumulator" in value:
-                continue
-            trade_rows = connection.execute(
-                "SELECT trade_json FROM trades WHERE session_id=? ORDER BY rowid", (session_id,)
-            ).fetchall()
-            fill_rows = connection.execute(
-                "SELECT fill_json FROM fills WHERE session_id=? ORDER BY rowid", (session_id,)
-            ).fetchall()
-            if trade_rows or fill_rows:
-                trades = [_v6_parse_trade(json.loads(item["trade_json"])) for item in trade_rows]
-                fills = [_v6_parse_fill(json.loads(item["fill_json"])) for item in fill_rows]
-                # The normalized tables are authoritative: the embedded copies
-                # in the snapshot are now redundant and would only bloat it.
-                value.pop("trades", None)
-                value.pop("fills", None)
-            else:
-                trades = [_v6_parse_trade(item) for item in (value.get("trades") or [])]
-                fills = [_v6_parse_fill(item) for item in (value.get("fills") or [])]
-            history_value = {
-                key: item for key, item in value.items() if key not in ("trades", "fills", "accumulator")
-            }
-            history_value["start"] = datetime.fromisoformat(str(history_value["start"]))
-            history_value["end"] = datetime.fromisoformat(str(history_value["end"]))
-            state = ReplayState(**history_value)
-            accumulator = build_accumulator_from_history(state, list(trades), list(fills))
-            value["accumulator"] = asdict(accumulator)
-            connection.execute(
-                "UPDATE replay_sessions SET state_json=? WHERE id=?",
-                (json.dumps(value, allow_nan=False), session_id),
-            )
-        except (TypeError, ValueError, KeyError, AttributeError, OverflowError):
-            # A session whose snapshot or ledger rows predate the fields the
-            # reconstruction needs keeps its snapshot untouched; the read path
-            # falls back to a full-history scan for it. One odd session must
-            # never block the backfill of the rest.
+        value = json.loads(row[1])
+        if not isinstance(value, dict) or "accumulator" in value:
             continue
+        _v6_backfill_session(connection, session_id, value)
+
+
+def _v6_backfill_session(connection: sqlite3.Connection, session_id: str, value: dict) -> None:
+    """Reconstruct and persist one session's accumulator from its ledger.
+
+    Raises on any row that cannot be parsed or derived; the caller's
+    transaction rolls the migration back.
+    """
+    import json
+    from dataclasses import asdict
+    from datetime import datetime
+
+    from .domain import ReplayState
+    from .stats import build_accumulator_from_history
+
+    trade_rows = connection.execute(
+        "SELECT trade_json FROM trades WHERE session_id=? ORDER BY rowid", (session_id,)
+    ).fetchall()
+    fill_rows = connection.execute(
+        "SELECT fill_json FROM fills WHERE session_id=? ORDER BY rowid", (session_id,)
+    ).fetchall()
+    if trade_rows or fill_rows:
+        trades = [_v6_parse_trade(json.loads(item[0])) for item in trade_rows]
+        fills = [_v6_parse_fill(json.loads(item[0])) for item in fill_rows]
+        # The normalized tables are authoritative: the embedded copies
+        # in the snapshot are now redundant and would only bloat it.
+        value.pop("trades", None)
+        value.pop("fills", None)
+    else:
+        trades = [_v6_parse_trade(item) for item in (value.get("trades") or [])]
+        fills = [_v6_parse_fill(item) for item in (value.get("fills") or [])]
+    history_value = {
+        key: item for key, item in value.items() if key not in ("trades", "fills", "accumulator")
+    }
+    history_value["start"] = datetime.fromisoformat(str(history_value["start"]))
+    history_value["end"] = datetime.fromisoformat(str(history_value["end"]))
+    state = ReplayState(**history_value)
+    accumulator = build_accumulator_from_history(state, list(trades), list(fills))
+    value["accumulator"] = asdict(accumulator)
+    # Persist the exact history totals too, so a restored legacy session's
+    # first load does not need the indexed cold-load COUNT fallback.
+    value["closed_trades_total"] = sum(1 for trade in trades if trade.status == "closed")
+    value["fills_total"] = len(fills)
+    connection.execute(
+        "UPDATE replay_sessions SET state_json=? WHERE id=?",
+        (json.dumps(value, allow_nan=False), session_id),
+    )
+
+
+def _migrate_v7_legacy_trade_metadata(connection: sqlite3.Connection) -> None:
+    """One-time exact backfill of the trade/fill metadata introduced by the
+    execution-cost and chart-anchor contract, derived only from information
+    the existing ledger rows already carry:
+
+    - fill ``source_candle_time``: on legacy rows the recorded timestamp was
+      the source candle's open, so the anchor equals the recorded time;
+    - trade cost totals: the same per-component sums the incremental booking
+      adds, taken over the trade's fill ledger;
+    - trade ``entry_market_price`` for rows that predate it (legacy contract:
+      the recorded entry price was the reference market price);
+    - trade ``entry_source_candle_time`` (legacy recorded entry time is the
+      source candle's open, so it equals the anchor);
+    - final-exit metadata on closed rows from their last ledger fill. The
+      exit precision stays None (rendered as ``legacy``): the legacy engine
+      recorded no precision, and an intrabar touch's exact moment is not
+      recoverable.
+
+    Rows whose ledger already agrees are left byte-for-byte untouched, so the
+    migration is idempotent and a no-op for databases that never held legacy
+    rows. Any row that cannot be parsed or derived fails the migration: the
+    transaction rolls back and the schema version stays at 6.
+    """
+    import json
+
+    fills_by_trade: dict[str, list[dict]] = {}
+    for row in connection.execute("SELECT id, trade_id, fill_json FROM fills ORDER BY rowid"):
+        fill_id, trade_id, raw = row[0], row[1], row[2]
+        payload = json.loads(raw)
+        if payload.get("source_candle_time") is None:
+            # Legacy fills recorded the source candle's open as the execution
+            # time, so the recorded time is the exact chart anchor.
+            payload["source_candle_time"] = payload["timestamp"]
+            connection.execute(
+                "UPDATE fills SET fill_json=? WHERE id=?",
+                (json.dumps(payload, allow_nan=False), fill_id),
+            )
+        fills_by_trade.setdefault(trade_id, []).append(payload)
+
+    for row in connection.execute("SELECT id, trade_json FROM trades ORDER BY rowid"):
+        trade_id, raw = row[0], row[1]
+        payload = json.loads(raw)
+        changed = False
+        ledger = fills_by_trade.get(trade_id, [])
+        commission = sum(item.get("commission", 0.0) for item in ledger)
+        spread = sum(item.get("spread_cost", 0.0) for item in ledger)
+        slippage = sum(item.get("slippage_cost", 0.0) for item in ledger)
+        if (payload.get("total_commission", 0.0), payload.get("total_spread_cost", 0.0),
+                payload.get("total_slippage_cost", 0.0)) != (commission, spread, slippage):
+            payload["total_commission"] = commission
+            payload["total_spread_cost"] = spread
+            payload["total_slippage_cost"] = slippage
+            changed = True
+        if payload.get("entry_market_price") is None:
+            payload["entry_market_price"] = payload["entry_price"]
+            changed = True
+        if payload.get("entry_source_candle_time") is None:
+            # Legacy trades recorded the source candle's open as the entry
+            # time, so the recorded time is the exact chart anchor.
+            payload["entry_source_candle_time"] = payload["entry_time"]
+            changed = True
+        if payload.get("status") == "closed" and payload.get("exit_time") is None and ledger:
+            last = ledger[-1]
+            market_price = last.get("market_price")
+            payload["exit_market_price"] = market_price if market_price is not None else last["price"]
+            payload["exit_price"] = last["price"]
+            payload["exit_time"] = last["timestamp"]
+            payload["exit_time_precision"] = None
+            payload["exit_window_start"] = None
+            payload["exit_window_end"] = None
+            payload["final_exit_reason"] = last["reason"]
+            changed = True
+        if changed:
+            connection.execute(
+                "UPDATE trades SET trade_json=? WHERE id=?",
+                (json.dumps(payload, allow_nan=False), trade_id),
+            )
+
+    # Any session that still lacks an accumulator (e.g. a v6 database that
+    # carried an unparseable embedded snapshot) is backfilled now, from the
+    # fully repaired ledger. Same strict failure semantics as v6.
+    for row in connection.execute("SELECT id, state_json FROM replay_sessions"):
+        session_id = row[0]
+        value = json.loads(row[1])
+        if not isinstance(value, dict) or "accumulator" in value:
+            continue
+        _v6_backfill_session(connection, session_id, value)
 
 
 _MIGRATIONS = {
@@ -328,6 +450,7 @@ _MIGRATIONS = {
     4: _migrate_v4_session_indexes,
     5: _migrate_v5_trade_status_and_reviews,
     6: _migrate_v6_stats_accumulator,
+    7: _migrate_v7_legacy_trade_metadata,
 }
 
 

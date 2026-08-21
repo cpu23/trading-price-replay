@@ -28,8 +28,26 @@ export function apiErrorDetail(body: unknown, fallback: string): string {
   }
 }
 
+/** A failed HTTP request; `status` is the response code (0 for network
+ * failures) so callers can distinguish e.g. 409 conflicts from other errors.
+ */
+export class ApiError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, init);
+  let response: Response;
+  try {
+    response = await fetch(path, init);
+  } catch (error) {
+    throw new ApiError(errorMessage(error), 0);
+  }
   const text = await response.text();
   let body: unknown;
   if (text) {
@@ -41,7 +59,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   if (!response.ok) {
-    throw new Error(apiErrorDetail(body, response.statusText || `Request failed (${response.status})`));
+    throw new ApiError(
+      apiErrorDetail(body, response.statusText || `Request failed (${response.status})`),
+      response.status,
+    );
   }
   return body as T;
 }

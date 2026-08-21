@@ -15,7 +15,7 @@ from app import config, market_data, repository
 from app.domain import Bar, Fill, ReplayState, Trade, bar_reveal_time
 from app.execution import close_trade, open_trade, process_bar, update_close_excursions
 from app.main import app
-from app.service import _state_response
+from app.service import _snapshot_response
 
 
 def ts(minute: int) -> datetime:
@@ -269,7 +269,7 @@ def test_legacy_trade_loads_without_exit_metadata():
     assert trade.exit_market_price is None
 
 
-def test_state_response_normalizes_legacy_precision():
+def test_snapshot_response_normalizes_legacy_precision():
     state = make_state()
     trade = Trade(
         id="t1", session_id=state.id, direction="long", initial_quantity=1.0,
@@ -284,7 +284,7 @@ def test_state_response_normalizes_legacy_precision():
     )
     state.fills.append(fill)
     open_t = open_trade(state, ts(2), 10.0, "short", 1.0, 11.0, 8.0, 1.0)
-    response = _state_response(state, [], [])
+    response = _snapshot_response(state, [], [])
     by_id = {item["id"]: item for item in response["trades"]}
     assert by_id["t1"]["exit_time_precision"] == "legacy"
     assert by_id[open_t.id]["exit_time_precision"] is None  # still open
@@ -374,7 +374,7 @@ def test_api_manual_exit_uses_reveal_timestamp(client):
     opened = client.post(f"/api/replay/sessions/{sid}/orders/market", json={
         "direction": "long", "quantity": 1,
     })
-    trade_id = opened.json()["trades"][-1]["id"]
+    trade_id = opened.json()["trade_upserts"][-1]["id"]
     client.post(f"/api/replay/sessions/{sid}/step")
     closed = client.post(f"/api/trades/{trade_id}/close", json={"session_id": sid, "quantity": 1})
     assert closed.status_code == 200, closed.text
@@ -400,7 +400,7 @@ def test_api_session_end_liquidation_uses_final_reveal_time(client):
         "direction": "long", "quantity": 1,
     })
     assert opened.status_code == 200, opened.text
-    trade_id = opened.json()["trades"][-1]["id"]
+    trade_id = opened.json()["trade_upserts"][-1]["id"]
     state = None
     while True:
         state = client.post(f"/api/replay/sessions/{sid}/step").json()

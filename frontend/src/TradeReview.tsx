@@ -1,27 +1,33 @@
 import { useEffect, useState } from "react";
-import { api } from "./api";
+import { api, errorMessage } from "./api";
 import { formatAdaptiveNumber, formatDuration, formatExecutionTime, formatNumber, formatPrice, parseTags, utcDateTime } from "./helpers";
-import type { ReplayState, Trade } from "./types";
+import type { ReplaySnapshot, ReviewRecord, Trade } from "./types";
 
 type TradeReviewProps = {
   trade: Trade;
-  replay: ReplayState;
+  replay: ReplaySnapshot;
   precision: number;
   busy: boolean;
-  action: (call: () => Promise<ReplayState>) => Promise<void>;
   onFocus: (trade: Trade) => void;
 };
 
-export function TradeReview({ trade, replay, precision, busy, action, onFocus }: TradeReviewProps) {
+export function TradeReview({ trade, replay, precision, busy, onFocus }: TradeReviewProps) {
   const [note, setNote] = useState(trade.review_note);
   const [tagInput, setTagInput] = useState("");
   const [saved, setSaved] = useState(false);
+  const [reviewError, setReviewError] = useState("");
+  // Review mutations return the persisted record (they bump no session
+  // revision), so the saved values are applied locally until the next
+  // authoritative snapshot/update re-renders the trade with them.
+  const [appliedReview, setAppliedReview] = useState<{ note: string; tags: string[] } | null>(null);
 
-  // Re-sync the draft when the server-side review changes (save, reload,
-  // or another tab writing through the same session).
+  // Re-sync the draft when the server-side review changes (reload, another
+  // tab writing through the same session, or a reconciliation refresh).
   useEffect(() => {
     setNote(trade.review_note);
+    setAppliedReview(null);
     setSaved(false);
+    setReviewError("");
   }, [trade.id, trade.review_note]);
 
   const currency = replay.account_currency;
@@ -31,8 +37,9 @@ export function TradeReview({ trade, replay, precision, busy, action, onFocus }:
     : null;
   const totalCosts = trade.total_commission + trade.total_spread_cost + trade.total_slippage_cost;
   const grossPnl = trade.realized_pnl + totalCosts;
-  const tags = trade.review_tags ?? [];
-  const dirty = note !== trade.review_note || tagInput.trim() !== "";
+  const effectiveNote = appliedReview?.note ?? trade.review_note;
+  const tags = appliedReview?.tags ?? trade.review_tags ?? [];
+  const dirty = note !== effectiveNote || tagInput.trim() !== "";
   const exitLabel = formatExecutionTime({
     timestamp: trade.exit_time ?? trade.entry_time,
     time_precision: trade.exit_time_precision,
@@ -46,13 +53,19 @@ export function TradeReview({ trade, replay, precision, busy, action, onFocus }:
 
   async function save() {
     setSaved(false);
-    await action(() => api.patch<ReplayState>(`/api/trades/${trade.id}/review`, {
-      session_id: replay.id,
-      review_note: note,
-      review_tags: parseTags(`${tags.join(", ")} ${tagInput}`),
-    }));
-    setTagInput("");
-    setSaved(true);
+    setReviewError("");
+    try {
+      const record = await api.patch<ReviewRecord>(`/api/trades/${trade.id}/review`, {
+        session_id: replay.id,
+        review_note: note,
+        review_tags: parseTags(`${tags.join(", ")} ${tagInput}`),
+      });
+      setAppliedReview({ note: record.note, tags: record.tags });
+      setTagInput("");
+      setSaved(true);
+    } catch (error) {
+      setReviewError(errorMessage(error));
+    }
   }
 
   return (
@@ -192,6 +205,7 @@ export function TradeReview({ trade, replay, precision, busy, action, onFocus }:
           <button type="button" onClick={() => void save()} disabled={busy || !dirty}>Save review</button>
           <button type="button" onClick={() => onFocus(trade)} disabled={busy}>Focus on chart</button>
           {saved && <span className="review-saved" role="status">Saved</span>}
+          {reviewError && <span className="review-error" role="alert">{reviewError}</span>}
         </div>
       </div>
     </article>

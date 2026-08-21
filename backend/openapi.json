@@ -1,6 +1,46 @@
 {
   "components": {
     "schemas": {
+      "ChartHistoryResponse": {
+        "description": "A bounded historical chart window anchored around one (possibly old)\ntrade.\n\nThe window holds enough source candles around the trade for the chart to\nfocus on it; it never loads the entire session's chart and does not\nrecreate the chart instance on the client. The trade's own fills come\nfrom the authoritative fill ledger (the trade may no longer be in the\nbounded in-memory working set).",
+        "properties": {
+          "displayed_bars": {
+            "items": {
+              "$ref": "#/components/schemas/DisplayBar"
+            },
+            "title": "Displayed Bars",
+            "type": "array"
+          },
+          "fills": {
+            "items": {
+              "$ref": "#/components/schemas/Fill"
+            },
+            "title": "Fills",
+            "type": "array"
+          },
+          "indicators": {
+            "additionalProperties": {
+              "items": {
+                "$ref": "#/components/schemas/IndicatorPoint"
+              },
+              "type": "array"
+            },
+            "title": "Indicators",
+            "type": "object"
+          },
+          "trade": {
+            "$ref": "#/components/schemas/Trade"
+          }
+        },
+        "required": [
+          "trade",
+          "fills",
+          "displayed_bars",
+          "indicators"
+        ],
+        "title": "ChartHistoryResponse",
+        "type": "object"
+      },
       "CloseRequest": {
         "properties": {
           "quantity": {
@@ -181,6 +221,10 @@
             "title": "Slippage Cost",
             "type": "number"
           },
+          "source_candle_time": {
+            "title": "Source Candle Time",
+            "type": "string"
+          },
           "spread_cost": {
             "title": "Spread Cost",
             "type": "number"
@@ -219,9 +263,43 @@
           "slippage_cost",
           "time_precision",
           "execution_window_start",
-          "execution_window_end"
+          "execution_window_end",
+          "source_candle_time"
         ],
         "title": "Fill",
+        "type": "object"
+      },
+      "FillHistoryPage": {
+        "description": "One page of a session's fill history (newest first, cursor-based).\n\n`next_cursor` is null on the final page.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/Fill"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total"
+        ],
+        "title": "FillHistoryPage",
         "type": "object"
       },
       "HTTPValidationError": {
@@ -520,6 +598,471 @@
         "title": "PriceRequest",
         "type": "object"
       },
+      "ReplaySnapshot": {
+        "description": "The full bounded authoritative state of a session.\n\nSent on session creation, resume, and explicit refresh/reconciliation.\n`revision` is the persisted revision the snapshot was read from. History\nis bounded: every open trade plus the most recent closed trades and\nfills; the `*_total` fields and truncation flags say how much more\nexists in the authoritative tables (fetched via the history endpoints).\nThe internal statistics accumulator is never exposed.",
+        "properties": {
+          "account_currency": {
+            "title": "Account Currency",
+            "type": "string"
+          },
+          "advance_step_minutes": {
+            "title": "Advance Step Minutes",
+            "type": "integer"
+          },
+          "chart_context_1m_bars": {
+            "title": "Chart Context 1M Bars",
+            "type": "integer"
+          },
+          "closed_trades_total": {
+            "title": "Closed Trades Total",
+            "type": "integer"
+          },
+          "closed_trades_truncated": {
+            "title": "Closed Trades Truncated",
+            "type": "boolean"
+          },
+          "commission_per_quantity": {
+            "title": "Commission Per Quantity",
+            "type": "number"
+          },
+          "contract_multiplier": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Contract Multiplier"
+          },
+          "conversion_rate": {
+            "title": "Conversion Rate",
+            "type": "number"
+          },
+          "current_candle_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Candle Time"
+          },
+          "current_index": {
+            "title": "Current Index",
+            "type": "integer"
+          },
+          "current_market_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Market Time"
+          },
+          "current_price": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Price"
+          },
+          "data_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data Version"
+          },
+          "displayed_bars": {
+            "items": {
+              "$ref": "#/components/schemas/DisplayBar"
+            },
+            "title": "Displayed Bars",
+            "type": "array"
+          },
+          "enabled_indicators": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Enabled Indicators",
+            "type": "array"
+          },
+          "end": {
+            "title": "End",
+            "type": "string"
+          },
+          "fills": {
+            "items": {
+              "$ref": "#/components/schemas/Fill"
+            },
+            "title": "Fills",
+            "type": "array"
+          },
+          "fills_total": {
+            "title": "Fills Total",
+            "type": "integer"
+          },
+          "fills_truncated": {
+            "title": "Fills Truncated",
+            "type": "boolean"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "indicator_warmup_margin": {
+            "title": "Indicator Warmup Margin",
+            "type": "integer"
+          },
+          "indicators": {
+            "additionalProperties": {
+              "items": {
+                "$ref": "#/components/schemas/IndicatorPoint"
+              },
+              "type": "array"
+            },
+            "title": "Indicators",
+            "type": "object"
+          },
+          "initial_balance": {
+            "title": "Initial Balance",
+            "type": "number"
+          },
+          "pnl_currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pnl Currency"
+          },
+          "price_precision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Precision"
+          },
+          "profile": {
+            "title": "Profile",
+            "type": "string"
+          },
+          "remaining_bars": {
+            "title": "Remaining Bars",
+            "type": "integer"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "slippage": {
+            "title": "Slippage",
+            "type": "number"
+          },
+          "spread": {
+            "title": "Spread",
+            "type": "number"
+          },
+          "start": {
+            "title": "Start",
+            "type": "string"
+          },
+          "stats": {
+            "$ref": "#/components/schemas/SessionStats"
+          },
+          "status": {
+            "enum": [
+              "active",
+              "completed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "symbol": {
+            "title": "Symbol",
+            "type": "string"
+          },
+          "trades": {
+            "items": {
+              "$ref": "#/components/schemas/Trade"
+            },
+            "title": "Trades",
+            "type": "array"
+          },
+          "visible_timeframe": {
+            "title": "Visible Timeframe",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "symbol",
+          "start",
+          "end",
+          "profile",
+          "visible_timeframe",
+          "advance_step_minutes",
+          "chart_context_1m_bars",
+          "indicator_warmup_margin",
+          "current_index",
+          "account_currency",
+          "conversion_rate",
+          "enabled_indicators",
+          "status",
+          "initial_balance",
+          "spread",
+          "slippage",
+          "commission_per_quantity",
+          "revision",
+          "closed_trades_total",
+          "fills_total",
+          "closed_trades_truncated",
+          "fills_truncated",
+          "current_market_time",
+          "current_candle_time",
+          "current_price",
+          "remaining_bars",
+          "displayed_bars",
+          "indicators",
+          "warnings",
+          "stats",
+          "trades",
+          "fills"
+        ],
+        "title": "ReplaySnapshot",
+        "type": "object"
+      },
+      "ReplayUpdate": {
+        "description": "A mutation delta for an installed snapshot.\n\nSent by every replay mutation (step, orders, closes, stop/target moves,\nsettings, indicator toggles). `revision` is the revision the mutation\ncommitted (after the commit, never a speculative in-memory value), so a\nclient can reject stale updates (`revision <= installed`), apply the\nnext one (`revision == installed + 1`), and fetch a fresh snapshot on a\ngap (`revision > installed + 1`). The chart remains a full bounded\npayload; the history is delta-based.",
+        "properties": {
+          "advance_step_minutes": {
+            "title": "Advance Step Minutes",
+            "type": "integer"
+          },
+          "closed_trades_total": {
+            "title": "Closed Trades Total",
+            "type": "integer"
+          },
+          "current_candle_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Candle Time"
+          },
+          "current_index": {
+            "title": "Current Index",
+            "type": "integer"
+          },
+          "current_market_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Market Time"
+          },
+          "current_price": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Price"
+          },
+          "displayed_bars": {
+            "items": {
+              "$ref": "#/components/schemas/DisplayBar"
+            },
+            "title": "Displayed Bars",
+            "type": "array"
+          },
+          "enabled_indicators": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Enabled Indicators",
+            "type": "array"
+          },
+          "fills_total": {
+            "title": "Fills Total",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "indicators": {
+            "additionalProperties": {
+              "items": {
+                "$ref": "#/components/schemas/IndicatorPoint"
+              },
+              "type": "array"
+            },
+            "title": "Indicators",
+            "type": "object"
+          },
+          "new_fills": {
+            "items": {
+              "$ref": "#/components/schemas/Fill"
+            },
+            "title": "New Fills",
+            "type": "array"
+          },
+          "newly_closed_trades": {
+            "items": {
+              "$ref": "#/components/schemas/Trade"
+            },
+            "title": "Newly Closed Trades",
+            "type": "array"
+          },
+          "remaining_bars": {
+            "title": "Remaining Bars",
+            "type": "integer"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "stats": {
+            "$ref": "#/components/schemas/SessionStats"
+          },
+          "status": {
+            "enum": [
+              "active",
+              "completed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "trade_removals_from_open": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Trade Removals From Open",
+            "type": "array"
+          },
+          "trade_upserts": {
+            "items": {
+              "$ref": "#/components/schemas/Trade"
+            },
+            "title": "Trade Upserts",
+            "type": "array"
+          },
+          "visible_timeframe": {
+            "title": "Visible Timeframe",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "revision",
+          "status",
+          "current_index",
+          "current_market_time",
+          "current_candle_time",
+          "current_price",
+          "remaining_bars",
+          "visible_timeframe",
+          "advance_step_minutes",
+          "enabled_indicators",
+          "displayed_bars",
+          "indicators",
+          "warnings",
+          "stats",
+          "trade_upserts",
+          "trade_removals_from_open",
+          "new_fills",
+          "newly_closed_trades",
+          "closed_trades_total",
+          "fills_total"
+        ],
+        "title": "ReplayUpdate",
+        "type": "object"
+      },
+      "ReviewRecord": {
+        "description": "The persisted review (note + tags) for one trade.\n\nReview mutations return this small dedicated record \u2014 not a replay\nsnapshot or update \u2014 because they change no replay state and must not\nbump the session revision.",
+        "properties": {
+          "note": {
+            "title": "Note",
+            "type": "string"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tags",
+            "type": "array"
+          },
+          "trade_id": {
+            "title": "Trade Id",
+            "type": "string"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "trade_id",
+          "session_id",
+          "note",
+          "tags",
+          "updated_at"
+        ],
+        "title": "ReviewRecord",
+        "type": "object"
+      },
       "ReviewRequest": {
         "properties": {
           "review_note": {
@@ -698,10 +1241,6 @@
             "title": "Max Drawdown",
             "type": "number"
           },
-          "median_r": {
-            "title": "Median R",
-            "type": "number"
-          },
           "net_pnl": {
             "title": "Net Pnl",
             "type": "number"
@@ -762,7 +1301,6 @@
           "equity",
           "total_r",
           "average_r",
-          "median_r",
           "average_win_r",
           "average_losing_r",
           "average_win",
@@ -856,86 +1394,16 @@
         "title": "SettingsRequest",
         "type": "object"
       },
-      "StateResponse": {
+      "SymbolMetadata": {
+        "description": "One symbol's current instrument/dataset metadata.\n\n`data_version` is null on legacy rows published before immutable dataset\nversions existed; such datasets are the then-current source and sessions\ncreated from them pin no version.",
         "properties": {
-          "account_currency": {
-            "title": "Account Currency",
+          "asset_class": {
+            "title": "Asset Class",
             "type": "string"
           },
-          "accumulator": {
-            "$ref": "#/components/schemas/StatsAccumulator"
-          },
-          "advance_step_minutes": {
-            "title": "Advance Step Minutes",
-            "type": "integer"
-          },
-          "chart_context_1m_bars": {
-            "title": "Chart Context 1M Bars",
-            "type": "integer"
-          },
-          "closed_trades_total": {
-            "title": "Closed Trades Total",
-            "type": "integer"
-          },
-          "closed_trades_truncated": {
-            "title": "Closed Trades Truncated",
-            "type": "boolean"
-          },
-          "commission_per_quantity": {
-            "title": "Commission Per Quantity",
-            "type": "number"
-          },
           "contract_multiplier": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Contract Multiplier"
-          },
-          "conversion_rate": {
-            "title": "Conversion Rate",
+            "title": "Contract Multiplier",
             "type": "number"
-          },
-          "current_candle_time": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Current Candle Time"
-          },
-          "current_index": {
-            "title": "Current Index",
-            "type": "integer"
-          },
-          "current_market_time": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Current Market Time"
-          },
-          "current_price": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Current Price"
           },
           "data_version": {
             "anyOf": [
@@ -947,304 +1415,6 @@
               }
             ],
             "title": "Data Version"
-          },
-          "displayed_bars": {
-            "items": {
-              "$ref": "#/components/schemas/DisplayBar"
-            },
-            "title": "Displayed Bars",
-            "type": "array"
-          },
-          "enabled_indicators": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Enabled Indicators",
-            "type": "array"
-          },
-          "end": {
-            "title": "End",
-            "type": "string"
-          },
-          "fills": {
-            "items": {
-              "$ref": "#/components/schemas/Fill"
-            },
-            "title": "Fills",
-            "type": "array"
-          },
-          "fills_total": {
-            "title": "Fills Total",
-            "type": "integer"
-          },
-          "fills_truncated": {
-            "title": "Fills Truncated",
-            "type": "boolean"
-          },
-          "id": {
-            "title": "Id",
-            "type": "string"
-          },
-          "indicator_warmup_margin": {
-            "title": "Indicator Warmup Margin",
-            "type": "integer"
-          },
-          "indicators": {
-            "additionalProperties": {
-              "items": {
-                "$ref": "#/components/schemas/IndicatorPoint"
-              },
-              "type": "array"
-            },
-            "title": "Indicators",
-            "type": "object"
-          },
-          "initial_balance": {
-            "title": "Initial Balance",
-            "type": "number"
-          },
-          "pnl_currency": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Pnl Currency"
-          },
-          "price_precision": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Price Precision"
-          },
-          "profile": {
-            "title": "Profile",
-            "type": "string"
-          },
-          "remaining_bars": {
-            "title": "Remaining Bars",
-            "type": "integer"
-          },
-          "revision": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Revision"
-          },
-          "slippage": {
-            "title": "Slippage",
-            "type": "number"
-          },
-          "spread": {
-            "title": "Spread",
-            "type": "number"
-          },
-          "start": {
-            "title": "Start",
-            "type": "string"
-          },
-          "stats": {
-            "$ref": "#/components/schemas/SessionStats"
-          },
-          "status": {
-            "enum": [
-              "active",
-              "completed"
-            ],
-            "title": "Status",
-            "type": "string"
-          },
-          "symbol": {
-            "title": "Symbol",
-            "type": "string"
-          },
-          "trades": {
-            "items": {
-              "$ref": "#/components/schemas/Trade"
-            },
-            "title": "Trades",
-            "type": "array"
-          },
-          "visible_timeframe": {
-            "title": "Visible Timeframe",
-            "type": "string"
-          },
-          "warnings": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Warnings",
-            "type": "array"
-          }
-        },
-        "required": [
-          "id",
-          "symbol",
-          "start",
-          "end",
-          "profile",
-          "visible_timeframe",
-          "advance_step_minutes",
-          "chart_context_1m_bars",
-          "indicator_warmup_margin",
-          "current_index",
-          "account_currency",
-          "conversion_rate",
-          "enabled_indicators",
-          "status",
-          "initial_balance",
-          "spread",
-          "slippage",
-          "commission_per_quantity",
-          "contract_multiplier",
-          "data_version",
-          "price_precision",
-          "pnl_currency",
-          "revision",
-          "accumulator",
-          "trades",
-          "fills",
-          "closed_trades_total",
-          "fills_total",
-          "closed_trades_truncated",
-          "fills_truncated",
-          "current_market_time",
-          "current_candle_time",
-          "current_price",
-          "displayed_bars",
-          "indicators",
-          "warnings",
-          "stats",
-          "remaining_bars"
-        ],
-        "title": "StateResponse",
-        "type": "object"
-      },
-      "StatsAccumulator": {
-        "properties": {
-          "commission_sum": {
-            "default": 0.0,
-            "title": "Commission Sum",
-            "type": "number"
-          },
-          "gross_pnl_sum": {
-            "default": 0.0,
-            "title": "Gross Pnl Sum",
-            "type": "number"
-          },
-          "holding_seconds_sum": {
-            "default": 0.0,
-            "title": "Holding Seconds Sum",
-            "type": "number"
-          },
-          "long_pnl_sum": {
-            "default": 0.0,
-            "title": "Long Pnl Sum",
-            "type": "number"
-          },
-          "losing_pnl_sum": {
-            "default": 0.0,
-            "title": "Losing Pnl Sum",
-            "type": "number"
-          },
-          "losing_trades": {
-            "default": 0,
-            "title": "Losing Trades",
-            "type": "integer"
-          },
-          "max_realized_drawdown": {
-            "default": 0.0,
-            "title": "Max Realized Drawdown",
-            "type": "number"
-          },
-          "net_pnl_sum": {
-            "default": 0.0,
-            "title": "Net Pnl Sum",
-            "type": "number"
-          },
-          "peak_realized_balance": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Peak Realized Balance"
-          },
-          "r_values": {
-            "items": {
-              "type": "number"
-            },
-            "title": "R Values",
-            "type": "array"
-          },
-          "short_pnl_sum": {
-            "default": 0.0,
-            "title": "Short Pnl Sum",
-            "type": "number"
-          },
-          "slippage_cost_sum": {
-            "default": 0.0,
-            "title": "Slippage Cost Sum",
-            "type": "number"
-          },
-          "spread_cost_sum": {
-            "default": 0.0,
-            "title": "Spread Cost Sum",
-            "type": "number"
-          },
-          "trades_completed": {
-            "default": 0,
-            "title": "Trades Completed",
-            "type": "integer"
-          },
-          "trades_opened": {
-            "default": 0,
-            "title": "Trades Opened",
-            "type": "integer"
-          },
-          "winning_pnl_sum": {
-            "default": 0.0,
-            "title": "Winning Pnl Sum",
-            "type": "number"
-          },
-          "winning_trades": {
-            "default": 0,
-            "title": "Winning Trades",
-            "type": "integer"
-          }
-        },
-        "title": "StatsAccumulator",
-        "type": "object"
-      },
-      "SymbolMetadata": {
-        "properties": {
-          "asset_class": {
-            "title": "Asset Class",
-            "type": "string"
-          },
-          "contract_multiplier": {
-            "title": "Contract Multiplier",
-            "type": "number"
-          },
-          "data_version": {
-            "title": "Data Version",
-            "type": "string"
           },
           "default_profile": {
             "title": "Default Profile",
@@ -1279,8 +1449,7 @@
           "contract_multiplier",
           "default_profile",
           "first_timestamp",
-          "last_timestamp",
-          "data_version"
+          "last_timestamp"
         ],
         "title": "SymbolMetadata",
         "type": "object"
@@ -1370,19 +1539,16 @@
             "type": "string"
           },
           "entry_market_price": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Entry Market Price"
+            "title": "Entry Market Price",
+            "type": "number"
           },
           "entry_price": {
             "title": "Entry Price",
             "type": "number"
+          },
+          "entry_source_candle_time": {
+            "title": "Entry Source Candle Time",
+            "type": "string"
           },
           "entry_time": {
             "title": "Entry Time",
@@ -1489,6 +1655,17 @@
             ],
             "title": "Initial Risk"
           },
+          "mae_close_price_delta": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mae Close Price Delta"
+          },
           "mae_gross_pnl": {
             "anyOf": [
               {
@@ -1499,6 +1676,17 @@
               }
             ],
             "title": "Mae Gross Pnl"
+          },
+          "mfe_close_price_delta": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mfe Close Price Delta"
           },
           "mfe_gross_pnl": {
             "anyOf": [
@@ -1601,11 +1789,47 @@
           "final_exit_reason",
           "mfe_gross_pnl",
           "mae_gross_pnl",
+          "mfe_close_price_delta",
+          "mae_close_price_delta",
           "total_commission",
           "total_spread_cost",
-          "total_slippage_cost"
+          "total_slippage_cost",
+          "entry_source_candle_time"
         ],
         "title": "Trade",
+        "type": "object"
+      },
+      "TradeHistoryPage": {
+        "description": "One page of a session's trade history (newest first, cursor-based).\n\nClosed trades include their review notes/tags and normalized legacy\ntiming; `next_cursor` is null on the final page.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/Trade"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total"
+        ],
+        "title": "TradeHistoryPage",
         "type": "object"
       },
       "ValidationError": {
@@ -1825,7 +2049,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/StateResponse"
+                  "$ref": "#/components/schemas/ReplaySnapshot"
                 }
               }
             },
@@ -1903,7 +2127,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/StateResponse"
+                  "$ref": "#/components/schemas/ReplayUpdate"
                 }
               }
             },
@@ -1921,6 +2145,75 @@
           }
         },
         "summary": "Session Close All"
+      }
+    },
+    "/api/replay/sessions/{session_id}/fills": {
+      "get": {
+        "description": "One bounded page of the session's fill history (newest first).",
+        "operationId": "session_fills_api_replay_sessions__session_id__fills_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FillHistoryPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Session Fills"
       }
     },
     "/api/replay/sessions/{session_id}/indicators/{indicator_id}/toggle": {
@@ -1951,7 +2244,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/StateResponse"
+                  "$ref": "#/components/schemas/ReplayUpdate"
                 }
               }
             },
@@ -2000,7 +2293,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/StateResponse"
+                  "$ref": "#/components/schemas/ReplayUpdate"
                 }
               }
             },
@@ -2049,7 +2342,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/StateResponse"
+                  "$ref": "#/components/schemas/ReplayUpdate"
                 }
               }
             },
@@ -2088,7 +2381,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/StateResponse"
+                  "$ref": "#/components/schemas/ReplaySnapshot"
                 }
               }
             },
@@ -2166,7 +2459,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/StateResponse"
+                  "$ref": "#/components/schemas/ReplayUpdate"
                 }
               }
             },
@@ -2184,6 +2477,150 @@
           }
         },
         "summary": "Session Step"
+      }
+    },
+    "/api/replay/sessions/{session_id}/trades": {
+      "get": {
+        "description": "One bounded page of the session's trade history (newest first).\n\nClosed trades include review notes/tags; an unknown or foreign-session\ncursor is rejected with 400.",
+        "operationId": "session_trades_api_replay_sessions__session_id__trades_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "default": "closed",
+              "enum": [
+                "open",
+                "closed"
+              ],
+              "title": "Status",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TradeHistoryPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Session Trades"
+      }
+    },
+    "/api/replay/sessions/{session_id}/trades/{trade_id}/chart-history": {
+      "get": {
+        "description": "A bounded historical chart window anchored around one (possibly old) trade.",
+        "operationId": "session_trade_chart_api_replay_sessions__session_id__trades__trade_id__chart_history_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "trade_id",
+            "required": true,
+            "schema": {
+              "title": "Trade Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "context_bars",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Context Bars",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChartHistoryResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Session Trade Chart"
       }
     },
     "/api/symbols": {
@@ -2298,7 +2735,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/StateResponse"
+                  "$ref": "#/components/schemas/ReplayUpdate"
                 }
               }
             },
@@ -2348,7 +2785,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/StateResponse"
+                  "$ref": "#/components/schemas/ReviewRecord"
                 }
               }
             },
@@ -2396,7 +2833,9 @@
           "200": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/ReplayUpdate"
+                }
               }
             },
             "description": "Successful Response"
@@ -2443,7 +2882,9 @@
           "200": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/ReplayUpdate"
+                }
               }
             },
             "description": "Successful Response"
