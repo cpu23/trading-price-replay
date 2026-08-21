@@ -420,6 +420,9 @@ class ChartHistoryResponse(BaseModel):
     fills: list[Fill]
     displayed_bars: list[DisplayBar]
     indicators: dict[str, list[IndicatorPoint]]
+    # The trade's span exceeded the focus budget: the window holds only the
+    # first CHART_FOCUS_MAX_BARS bars from its entry.
+    truncated: bool = False
 
 
 class ReviewRecord(BaseModel):

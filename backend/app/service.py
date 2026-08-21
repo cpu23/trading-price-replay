@@ -7,9 +7,9 @@ from .domain import ReplayState, Trade, bar_reveal_time, serializable, state_sna
 from .execution import close_trade, open_trade, process_bar, update_close_excursions
 from .indicators import sma
 from .market_data import RangeBars, bars_signature, load_bars_before, load_bars_range
-from .repository import (_trade_fingerprint, get_symbol, get_trade, get_trade_fills,
-                         get_trade_reviews, list_fills, list_trades, load_state_cached,
-                         save_session, upsert_trade_review)
+from .repository import (_trade_fingerprint, get_last_fill_anchor, get_symbol, get_trade,
+                         get_trade_fills, get_trade_reviews, list_fills, list_trades,
+                         load_state_cached, save_session, upsert_trade_review)
 from .stats import calculate_stats
 from .timeframes import MINUTES, resample
 
@@ -204,6 +204,38 @@ class _WorkingSet:
         self.fill_count = len(state.fills)
 
 
+def _capture_delta(state: ReplayState, working_set: _WorkingSet) -> dict[str, list]:
+    """The mutation's trade/fill delta, read from the in-memory state BEFORE
+    `save_session` prunes the working set back to the response caps.
+
+    At exactly the cap, a fill appended by the mutation (or a close-all that
+    pushes the closed window past its cap) is pruned in the same call that
+    commits it; building the delta from the state afterwards would see an
+    empty tail and the client would never receive the mutation. Holds domain
+    objects; the response layer serializes them.
+    """
+    upserts: list[Trade] = []
+    removed: list[str] = []
+    newly_closed: list[Trade] = []
+    for trade in state.trades:
+        if trade.id in working_set.open_ids:
+            if trade.status == "closed":
+                removed.append(trade.id)
+                newly_closed.append(trade)
+            elif working_set.open_fingerprints[trade.id] != _trade_fingerprint(trade):
+                upserts.append(trade)
+        elif trade.status == "open":
+            # A trade opened by this mutation was not in the pre-mutation open
+            # set: the client has never seen it, so it is upserted whole.
+            upserts.append(trade)
+    return {
+        "trade_upserts": upserts,
+        "trade_removals_from_open": removed,
+        "newly_closed_trades": newly_closed,
+        "new_fills": list(state.fills[working_set.fill_count:]),
+    }
+
+
 def _rendered(state: ReplayState, before: list, replay: list) -> dict[str, object]:
     """The shared rendered core of a snapshot/update: scalars, bounded chart,
     indicators, warnings, stats, and history totals. The internal accumulator
@@ -266,26 +298,13 @@ def state_response(state: ReplayState) -> dict[str, object]:
 
 
 def _update_response(state: ReplayState, before: list, replay: list,
-                     working_set: _WorkingSet) -> dict[str, object]:
+                     delta: dict[str, list]) -> dict[str, object]:
     """A mutation delta: everything an installed snapshot needs to catch up
-    without re-sending the recent history. `revision` is the revision the
-    mutation committed."""
+    without re-sending the recent history. `delta` was captured before the
+    save pruned the working set (see `_capture_delta`), so a fill or close
+    that the prune removed in the same commit still reaches the client;
+    `revision` is the revision the mutation committed."""
     rendered = _rendered(state, before, replay)
-    upserts: list[Trade] = []
-    removed: list[str] = []
-    newly_closed: list[Trade] = []
-    for trade in state.trades:
-        if trade.id in working_set.open_ids:
-            if trade.status == "closed":
-                removed.append(trade.id)
-                newly_closed.append(trade)
-            elif working_set.open_fingerprints[trade.id] != _trade_fingerprint(trade):
-                upserts.append(trade)
-        elif trade.status == "open":
-            # A trade opened by this mutation was not in the pre-mutation open
-            # set: the client has never seen it, so it is upserted whole.
-            upserts.append(trade)
-    new_fills = state.fills[working_set.fill_count:]
     return {
         "id": state.id,
         "revision": state.revision,
@@ -302,11 +321,11 @@ def _update_response(state: ReplayState, before: list, replay: list,
         "indicators": rendered["indicators"],
         "warnings": rendered["warnings"],
         "stats": rendered["stats"],
-        "trade_upserts": _trade_wire(upserts),
-        "trade_removals_from_open": removed,
-        "new_fills": _fill_wire(new_fills),
+        "trade_upserts": _trade_wire(delta["trade_upserts"]),
+        "trade_removals_from_open": delta["trade_removals_from_open"],
+        "new_fills": _fill_wire(delta["new_fills"]),
         # Insertion order (oldest first): the client appends to its history.
-        "newly_closed_trades": _trade_wire(newly_closed),
+        "newly_closed_trades": _trade_wire(delta["newly_closed_trades"]),
         "closed_trades_total": rendered["closed_trades_total"],
         "fills_total": rendered["fills_total"],
     }
@@ -336,8 +355,9 @@ def step(state: ReplayState) -> dict[str, object]:
         update_close_excursions(state, bar, multiplier)
     if state.current_index >= len(replay) - 1:
         state.status = "completed"
+    delta = _capture_delta(state, working_set)
     save_session(state, "replay_stepped", {"step": state.advance_step_minutes})
-    return _update_response(state, before, replay, working_set)
+    return _update_response(state, before, replay, delta)
 
 
 def update_settings(state: ReplayState, visible_timeframe: str | None, advance_step_minutes: int | None) -> dict[str, object]:
@@ -349,8 +369,9 @@ def update_settings(state: ReplayState, visible_timeframe: str | None, advance_s
         state.advance_step_minutes = advance_step_minutes
     before, replay = session_bars(state)
     working_set = _WorkingSet(state)
+    delta = _capture_delta(state, working_set)
     save_session(state, "settings_changed")
-    return _update_response(state, before, replay, working_set)
+    return _update_response(state, before, replay, delta)
 
 
 def toggle_indicator(state: ReplayState, indicator_id: str) -> dict[str, object]:
@@ -362,8 +383,9 @@ def toggle_indicator(state: ReplayState, indicator_id: str) -> dict[str, object]
         state.enabled_indicators.append(indicator_id)
     before, replay = session_bars(state)
     working_set = _WorkingSet(state)
+    delta = _capture_delta(state, working_set)
     save_session(state, "indicator_toggled", {"indicator_id": indicator_id})
-    return _update_response(state, before, replay, working_set)
+    return _update_response(state, before, replay, delta)
 
 
 def market_order(state: ReplayState, direction: str, quantity: float, stop_price: float | None,
@@ -383,10 +405,11 @@ def market_order(state: ReplayState, direction: str, quantity: float, stop_price
     # open, which is recorded as the chart anchor for the entry marker.
     trade = open_trade(state, bar_reveal_time(current_bar), float(current_bar.close), direction, quantity,
                        stop_price, target_price, multiplier, source_candle_time=current_bar.timestamp)
+    delta = _capture_delta(state, working_set)
     save_session(state, "order_filled", {"direction": direction, "quantity": quantity},
                  orders=[{"trade_id": trade.id, "order_type": "market_entry",
                           "payload": {"direction": direction, "quantity": quantity}}])
-    return _update_response(state, before, replay, working_set)
+    return _update_response(state, before, replay, delta)
 
 
 def close_position(state: ReplayState, trade_id: str, quantity: float) -> dict[str, object]:
@@ -401,9 +424,10 @@ def close_position(state: ReplayState, trade_id: str, quantity: float) -> dict[s
     working_set = _WorkingSet(state)
     close_trade(state, trade, bar_reveal_time(current_bar), float(current_bar.close), quantity, "manual", multiplier,
                 source_candle_time=current_bar.timestamp)
+    delta = _capture_delta(state, working_set)
     save_session(state, "position_closed", {"trade_id": trade_id, "quantity": quantity},
                  orders=[{"trade_id": trade.id, "order_type": "market_close", "payload": {"quantity": quantity}}])
-    return _update_response(state, before, replay, working_set)
+    return _update_response(state, before, replay, delta)
 
 
 def close_all_positions(state: ReplayState) -> dict[str, object]:
@@ -425,8 +449,9 @@ def close_all_positions(state: ReplayState) -> dict[str, object]:
                         source_candle_time=current_bar.timestamp)
             orders.append({"trade_id": trade.id, "order_type": "close_all",
                            "payload": {"quantity": quantity, "reason": reason}})
+    delta = _capture_delta(state, working_set)
     save_session(state, "positions_closed_all", {"closed": len(open_trades)}, orders=orders)
-    return _update_response(state, before, replay, working_set)
+    return _update_response(state, before, replay, delta)
 
 
 # Review-note/tag bounds: a review is a short human annotation, not a document.
@@ -484,8 +509,9 @@ def update_trade_stop(state: ReplayState, trade_id: str, price: float | None) ->
     before, replay = session_bars(state)
     working_set = _WorkingSet(state)
     trade.stop_price = price
+    delta = _capture_delta(state, working_set)
     save_session(state, "stop_moved", {"trade_id": trade_id, "price": price})
-    return _update_response(state, before, replay, working_set)
+    return _update_response(state, before, replay, delta)
 
 
 def update_trade_target(state: ReplayState, trade_id: str, price: float | None) -> dict[str, object]:
@@ -506,8 +532,9 @@ def update_trade_target(state: ReplayState, trade_id: str, price: float | None) 
     before, replay = session_bars(state)
     working_set = _WorkingSet(state)
     trade.target_price = price
+    delta = _capture_delta(state, working_set)
     save_session(state, "target_moved", {"trade_id": trade_id, "price": price})
-    return _update_response(state, before, replay, working_set)
+    return _update_response(state, before, replay, delta)
 
 
 def _current_price(state: ReplayState) -> float:
@@ -551,40 +578,70 @@ def chart_history(state: ReplayState, trade_id: str, context_bars: int) -> dict[
 
     The trade is resolved from the authoritative table (it may sit far outside
     the current chart context and the in-memory working set); the market-data
-    read is bounded to the trade's span plus `context_bars` on each side. For
-    a still-open trade the window extends to the current replay position. No
-    future leakage is possible for a completed historical window, and the
-    client's live chart returns to the current replay window afterwards (the
-    chart instance is not recreated).
+    read is a bounded paged window over the trade's span plus up to
+    `context_bars` on each side, never more than CHART_FOCUS_MAX_BARS bars
+    in total. While the replay is still active the window's end is clamped to
+    the open time of the most recently revealed candle, so focusing an old
+    trade can never reveal bars the replay has not causally reached (the
+    trade's exit timestamp is the source candle's reveal time, one candle
+    past its chart key); for a completed session the clamp is a no-op. A
+    trade whose own span exceeds CHART_FOCUS_MAX_BARS gets the first
+    CHART_FOCUS_MAX_BARS bars from its entry, flagged ``truncated``: the rest
+    of the trade lies beyond the window's right edge. Fills are read for the
+    returned window only. The client's live chart returns to the current
+    replay window afterwards (the chart instance is not recreated).
     """
     trade = get_trade(state.id, trade_id)
     if trade is None:
         raise TradeNotFoundError("trade not found in session")
     context = min(max(context_bars, 1), CHART_FOCUS_MAX_CONTEXT_BARS)
-    entry_time = trade.entry_time
+    entry_anchor = trade.entry_source_candle_time or trade.entry_time
+    before, replay = session_bars(state)
+    current_bar = _current_bar(before, replay, state.current_index)
     if trade.exit_time is not None:
-        anchor_end = trade.exit_time
-    elif state.current_index >= 0:
-        before, replay = session_bars(state)
-        current_bar = _current_bar(before, replay, state.current_index)
-        anchor_end = bar_reveal_time(current_bar) if current_bar else entry_time
+        # The exit marker's chart anchor: the source candle of the trade's
+        # final exit fill (one indexed read, ledger-length independent).
+        anchor_end = get_last_fill_anchor(state.id, trade_id) or trade.exit_time
     else:
-        anchor_end = entry_time
-    start = entry_time - timedelta(minutes=context)
-    end = anchor_end + timedelta(minutes=context)
-    source = load_bars_range(state.symbol, start, end, state.data_version)
-    if len(source) > CHART_FOCUS_MAX_BARS:
-        first = next(i for i, bar in enumerate(source) if bar.timestamp >= entry_time)
-        last = next(i for i in range(len(source) - 1, -1, -1) if source[i].timestamp <= anchor_end)
-        extra = max((CHART_FOCUS_MAX_BARS - (last - first + 1)) // 2, 0)
-        source = source[max(0, first - extra): last + extra + 1]
+        anchor_end = current_bar.timestamp if current_bar else entry_anchor
+    if current_bar is not None:
+        # Causal clamp: the window may not end past the open of the most
+        # recently revealed candle (a closed trade's exit timestamp is its
+        # source candle's reveal time, one candle past its chart key).
+        anchor_end = min(anchor_end, current_bar.timestamp)
+    span_minutes = max(int((anchor_end - entry_anchor).total_seconds() // 60), 0)
+    truncated = False
+    if span_minutes >= CHART_FOCUS_MAX_BARS:
+        # Very long trade: the first CHART_FOCUS_MAX_BARS bars from the entry
+        # marker's candle; the remainder is beyond the right edge (flagged
+        # truncated).
+        start = entry_anchor
+        end = entry_anchor + timedelta(minutes=CHART_FOCUS_MAX_BARS - 1)
+        truncated = True
+    else:
+        # Split the remaining bar budget around the span, capping each side
+        # at the requested context, so the window never exceeds
+        # CHART_FOCUS_MAX_BARS (market gaps only make it smaller).
+        budget = CHART_FOCUS_MAX_BARS - span_minutes - 1
+        front = min(context, budget // 2)
+        back = min(context, budget - front)
+        start = entry_anchor - timedelta(minutes=front)
+        end = anchor_end + timedelta(minutes=back)
+    if current_bar is not None:
+        # The trailing context must not reveal bars the replay has not
+        # causally reached: the window ends at the open of the most recently
+        # revealed candle (a no-op for a completed session).
+        end = min(end, current_bar.timestamp)
+    window = RangeBars(state.symbol, start, end, state.data_version)
+    source = list(window)
     displayed = resample(source, state.visible_timeframe, state.profile)
-    fills = get_trade_fills(state.id, trade_id)
+    fills = get_trade_fills(state.id, trade_id, start, end)
     response: dict[str, object] = {
         "trade": _trade_wire([trade])[0],
         "fills": _fill_wire(fills),
         "displayed_bars": serializable(displayed),
         "indicators": {},
+        "truncated": truncated,
     }
     if "sma_close_35" in state.enabled_indicators:
         response["indicators"] = {"sma_close_35": sma(displayed)}

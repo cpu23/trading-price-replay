@@ -203,8 +203,10 @@ def save_session(state: ReplayState, event_type: str, payload: dict[str, object]
                 if tracked_fill_ids is not None and fill.id in tracked_fill_ids:
                     continue
                 db.execute(
-                    "INSERT OR IGNORE INTO fills(id,session_id,trade_id,fill_json,created_at) VALUES(?,?,?,?,?)",
-                    (fill.id, state.id, fill.trade_id, json.dumps(serializable(fill), allow_nan=False), now),
+                    "INSERT OR IGNORE INTO fills(id,session_id,trade_id,fill_json,anchor_time,created_at) "
+                    "VALUES(?,?,?,?,?,?)",
+                    (fill.id, state.id, fill.trade_id, json.dumps(serializable(fill), allow_nan=False),
+                     (fill.source_candle_time or fill.timestamp).isoformat(), now),
                 )
             for order in orders or []:
                 db.execute(
@@ -432,17 +434,48 @@ def get_trade(session_id: str, trade_id: str) -> Trade | None:
     return _parse_trade(json.loads(row["trade_json"])) if row else None
 
 
-def get_trade_fills(session_id: str, trade_id: str) -> list[Fill]:
-    """Every fill of one trade in insertion (rowid) order, bounded by the trade's
-    own ledger (a trade produces at most a handful of fills, so this is always
-    small). Used by the chart-history focus endpoint to draw markers for a
-    trade that is no longer in the bounded in-memory working set."""
+def get_trade_fills(session_id: str, trade_id: str,
+                    start: datetime | None = None, end: datetime | None = None) -> list[Fill]:
+    """The fills of one trade whose chart anchor falls within [start, end]
+    (every fill when no bounds are given), in insertion (rowid) order.
+
+    The anchor is the indexed ``anchor_time`` column (the source candle's
+    open; the recorded timestamp for legacy rows), so a trade with an
+    unbounded number of partial exits still reads only the fills the
+    requested chart window can display. Used by the chart-history focus
+    endpoint to draw markers for a trade that is no longer in the bounded
+    in-memory working set."""
+    clauses = ["session_id = ?", "trade_id = ?"]
+    params: list[object] = [session_id, trade_id]
+    if start is not None:
+        clauses.append("anchor_time >= ?")
+        params.append(start.astimezone(timezone.utc).isoformat())
+    if end is not None:
+        clauses.append("anchor_time <= ?")
+        params.append(end.astimezone(timezone.utc).isoformat())
     with connect() as db:
         rows = db.execute(
-            "SELECT fill_json FROM fills WHERE session_id=? AND trade_id=? ORDER BY rowid",
-            (session_id, trade_id),
+            f"SELECT fill_json FROM fills WHERE {' AND '.join(clauses)} ORDER BY rowid",
+            tuple(params),
         ).fetchall()
     return [_parse_fill(json.loads(item["fill_json"])) for item in rows]
+
+
+def get_last_fill_anchor(session_id: str, trade_id: str) -> datetime | None:
+    """The chart anchor of one trade's most recent fill (its final exit when
+    the trade is closed).
+
+    Fills are inserted in execution order, so the highest rowid is the
+    latest fill; one indexed read, independent of the ledger's length."""
+    with connect() as db:
+        row = db.execute(
+            "SELECT COALESCE(json_extract(fill_json, '$.source_candle_time'), "
+            "json_extract(fill_json, '$.timestamp')) "
+            "FROM fills WHERE session_id = ? AND trade_id = ? "
+            "ORDER BY rowid DESC LIMIT 1",
+            (session_id, trade_id),
+        ).fetchone()
+    return datetime.fromisoformat(row[0]) if row else None
 
 def upsert_trade_review(session_id: str, trade_id: str, note: str, tags: list[str]) -> dict[str, object]:
     """Persist the user review (note + tags) for one trade of a session."""

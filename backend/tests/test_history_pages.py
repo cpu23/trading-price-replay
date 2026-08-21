@@ -370,3 +370,192 @@ def test_chart_history_returns_a_bounded_window_around_an_old_trade(client):
 
     missing = client.get(f"/api/replay/sessions/{session_id}/trades/no-such-trade/chart-history")
     assert missing.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Causal clamp: a focused window cannot leak unrevealed candles
+# ---------------------------------------------------------------------------
+
+def test_chart_history_focus_is_clamped_to_the_revealed_candle(client):
+    """While the replay is active, a focused window must not end past the open
+    time of the most recently revealed candle: the trade's exit timestamp is
+    the source candle's reveal time (one candle ahead of its chart key), and
+    candles after the reveal are not causal yet."""
+    session_id = create_session(client)["id"]  # 7 bars, 17:00-17:06
+    assert client.post(f"/api/replay/sessions/{session_id}/step").status_code == 200
+    opened = client.post(f"/api/replay/sessions/{session_id}/orders/market",
+                         json={"direction": "long", "quantity": 1})
+    assert opened.status_code == 200, opened.text
+    trade_id = opened.json()["trade_upserts"][0]["id"]
+    assert client.post(f"/api/replay/sessions/{session_id}/step").status_code == 200
+    # Close at the latest candle's reveal: the exit timestamp (17:02) is one
+    # minute ahead of that candle's chart key (17:01).
+    closed = client.post(f"/api/replay/sessions/{session_id}/close-all")
+    assert closed.status_code == 200, closed.text
+    state = client.get(f"/api/replay/sessions/{session_id}/state").json()
+    assert closed.json()["newly_closed_trades"][0]["exit_time"] == state["current_market_time"]
+    assert state["current_market_time"] == "2026-01-02T17:02:00+00:00"
+
+    response = client.get(f"/api/replay/sessions/{session_id}/trades/{trade_id}/chart-history",
+                          params={"context_bars": 5})
+    assert response.status_code == 200, response.text
+    window = response.json()
+    bars = window["displayed_bars"]
+    first, last = parse(bars[0]["timestamp"]), parse(bars[-1]["timestamp"])
+    # The window ends at the revealed candle's open, not the exit timestamp,
+    # and no unrevealed candle (17:02 or later) is returned.
+    assert last <= parse(state["current_candle_time"])
+    # Both of the trade's own fill anchors sit inside the returned window.
+    assert len(window["fills"]) == 2
+    for fill in window["fills"]:
+        assert first <= parse(fill["source_candle_time"]) <= last
+
+
+def test_chart_history_does_not_materialize_the_full_range(client, monkeypatch):
+    """The focus endpoint reads through the paged RangeBars view; the
+    materialized full-range read (load_bars_range) is no longer on the path."""
+    def boom(*args, **kwargs):
+        raise AssertionError("chart history must not materialize the full range")
+
+    monkeypatch.setattr("app.service.load_bars_range", boom)
+    session_id = create_session(client)["id"]
+    assert client.post(f"/api/replay/sessions/{session_id}/step").status_code == 200
+    opened = client.post(f"/api/replay/sessions/{session_id}/orders/market",
+                         json={"direction": "long", "quantity": 1})
+    assert opened.status_code == 200, opened.text
+    trade_id = opened.json()["trade_upserts"][0]["id"]
+    assert client.post(f"/api/replay/sessions/{session_id}/close-all").status_code == 200
+    response = client.get(f"/api/replay/sessions/{session_id}/trades/{trade_id}/chart-history")
+    assert response.status_code == 200, response.text
+    assert response.json()["displayed_bars"]
+
+
+def test_very_long_trade_focus_window_is_truncated(client, tmp_path):
+    """A trade whose span exceeds CHART_FOCUS_MAX_BARS gets the first
+    CHART_FOCUS_MAX_BARS bars from its entry, flagged truncated: the rest of
+    the trade lies beyond the window's right edge."""
+    from app import service
+
+    start = datetime(2026, 3, 2, 0, 0, tzinfo=timezone.utc)
+    lines = ["Date,Time,Open,High,Low,Close,TickVolume,Volume,Spread"]
+    for i in range(2600):
+        ts = start + timedelta(minutes=i)
+        price = 1.1 + (i % 97) * 0.0001
+        lines.append(f"{ts.year:04d}.{ts.month:02d}.{ts.day:02d},{ts.hour:02d}:{ts.minute:02d}:00,"
+                     f"{price:.4f},{price + 0.0004:.4f},{price - 0.0004:.4f},{price + 0.0001:.4f},10,0,0")
+    csv_path = tmp_path / "long.csv"
+    csv_path.write_text("\n".join(lines) + "\n")
+    imported = client.post("/api/imports", json={
+        "path": str(csv_path), "symbol": "LONGT", "asset_class": "forex",
+        "pnl_currency": "USD", "price_precision": 4, "contract_multiplier": 1,
+        "default_profile": "utc_aligned",
+    })
+    assert imported.status_code == 200, imported.text
+    session = client.post("/api/replay/sessions", json={
+        "symbol": "LONGT", "start": "2026-03-02T00:00:00Z", "end": "2026-03-03T19:20:00Z",
+        "chart_context_1m_bars": 500, "advance_step_minutes": 50,
+    })
+    assert session.status_code == 200, session.text
+    session_id = session.json()["id"]
+    assert client.post(f"/api/replay/sessions/{session_id}/step").status_code == 200
+    opened = client.post(f"/api/replay/sessions/{session_id}/orders/market",
+                         json={"direction": "long", "quantity": 1})
+    assert opened.status_code == 200, opened.text
+    trade_id = opened.json()["trade_upserts"][0]["id"]
+    for _ in range(42):
+        assert client.post(f"/api/replay/sessions/{session_id}/step").status_code == 200
+    closed = client.post(f"/api/replay/sessions/{session_id}/close-all")
+    assert closed.status_code == 200, closed.text
+
+    response = client.get(f"/api/replay/sessions/{session_id}/trades/{trade_id}/chart-history",
+                          params={"context_bars": 500})
+    assert response.status_code == 200, response.text
+    window = response.json()
+    bars = window["displayed_bars"]
+    assert window["truncated"] is True
+    assert len(bars) == service.CHART_FOCUS_MAX_BARS
+    entry_anchor = parse(window["trade"]["entry_source_candle_time"])
+    first, last = parse(bars[0]["timestamp"]), parse(bars[-1]["timestamp"])
+    assert first == entry_anchor
+    assert last == entry_anchor + timedelta(minutes=service.CHART_FOCUS_MAX_BARS - 1)
+    # The trade's exit lies beyond the window's right edge.
+    assert parse(window["trade"]["exit_time"]) > last
+
+
+# ---------------------------------------------------------------------------
+# Mutation deltas at the response caps
+# ---------------------------------------------------------------------------
+
+def test_entry_fill_at_the_response_cap_still_reaches_the_client(client):
+    """A fill appended by a mutation while the session is exactly at the fill
+    response cap must still reach the client: save_session prunes the
+    in-memory working set to the cap in the same commit that persists the
+    fill, so a delta derived from the post-save state sees an empty tail."""
+    from app import service
+
+    session_id = create_session(client)["id"]
+    seed_closed_trades(client, session_id, service.MAX_RESPONSE_FILLS // 2)
+    state = client.get(f"/api/replay/sessions/{session_id}/state").json()
+    assert state["fills_total"] == service.MAX_RESPONSE_FILLS
+    opened = client.post(f"/api/replay/sessions/{session_id}/orders/market",
+                         json={"direction": "long", "quantity": 1})
+    assert opened.status_code == 200, opened.text
+    body = opened.json()
+    assert body["fills_total"] == service.MAX_RESPONSE_FILLS + 1
+    assert body["new_fills"], "the cap-boundary fill must be delivered in the delta"
+    assert body["new_fills"][0]["trade_id"] == body["trade_upserts"][0]["id"]
+
+
+def test_close_all_past_the_closed_cap_delivers_every_new_close(client):
+    """A close-all that pushes the closed-trade window past its cap must
+    report every trade that just closed: at the cap, the prune drops the
+    oldest closed row in the same commit, so a delta derived from the
+    post-save state loses exactly the rows that just closed."""
+    from app import service
+
+    session_id = create_session(client)["id"]
+    assert client.post(f"/api/replay/sessions/{session_id}/step").status_code == 200
+    for _ in range(service.MAX_RESPONSE_CLOSED_TRADES + 1):
+        opened = client.post(f"/api/replay/sessions/{session_id}/orders/market",
+                             json={"direction": "long", "quantity": 1})
+        assert opened.status_code == 200, opened.text
+    closed = client.post(f"/api/replay/sessions/{session_id}/close-all")
+    assert closed.status_code == 200, closed.text
+    body = closed.json()
+    assert body["closed_trades_total"] == service.MAX_RESPONSE_CLOSED_TRADES + 1
+    assert len(body["newly_closed_trades"]) == service.MAX_RESPONSE_CLOSED_TRADES + 1
+    assert len(body["trade_removals_from_open"]) == service.MAX_RESPONSE_CLOSED_TRADES + 1
+    assert len({trade["id"] for trade in body["newly_closed_trades"]}) == service.MAX_RESPONSE_CLOSED_TRADES + 1
+
+
+def test_trade_fills_are_read_by_chart_anchor_window(client):
+    """get_trade_fills bounds its read by the indexed chart anchor, so a trade
+    with partial exits spread over a long span returns only the fills the
+    requested chart window can show (the unbounded-ledger case)."""
+    base = datetime(2026, 1, 2, 17, 0, tzinfo=timezone.utc)
+
+    session_id = create_session(client)["id"]
+    assert client.post(f"/api/replay/sessions/{session_id}/step").status_code == 200
+    opened = client.post(f"/api/replay/sessions/{session_id}/orders/market",
+                         json={"direction": "long", "quantity": 1})
+    assert opened.status_code == 200, opened.text
+    trade_id = opened.json()["trade_upserts"][0]["id"]
+    for _ in range(3):
+        assert client.post(f"/api/replay/sessions/{session_id}/step").status_code == 200
+    assert client.post(f"/api/trades/{trade_id}/close",
+                       json={"session_id": session_id, "quantity": 0.5}).status_code == 200
+    for _ in range(3):
+        assert client.post(f"/api/replay/sessions/{session_id}/step").status_code == 200
+    assert client.post(f"/api/replay/sessions/{session_id}/close-all").status_code == 200
+
+    all_fills = repository.get_trade_fills(session_id, trade_id)
+    assert len(all_fills) == 3
+    anchors = [fill.source_candle_time for fill in all_fills]
+    assert anchors == [base, base + timedelta(minutes=3), base + timedelta(minutes=6)]
+
+    # A window covering only the entry anchor.
+    early = repository.get_trade_fills(session_id, trade_id, base, base + timedelta(minutes=2))
+    assert [fill.id for fill in early] == [all_fills[0].id]
+    # A window covering only the two exit anchors' neighbourhood.
+    late = repository.get_trade_fills(session_id, trade_id, base + timedelta(minutes=2), base + timedelta(minutes=7))
+    assert [fill.id for fill in late] == [all_fills[1].id, all_fills[2].id]

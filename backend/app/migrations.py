@@ -35,6 +35,12 @@ Version history
     still missing an accumulator (a v6 database with an unparseable embedded
     snapshot) are backfilled from the repaired ledger with the same strict
     failure semantics as v6.
+8.  Additive: the indexed ``fills.anchor_time`` chart-anchor column,
+    backfilled from each row's effective chart anchor (the source candle's
+    open, or the recorded timestamp for legacy rows), so the chart-history
+    focus endpoint reads one trade's fills inside one bounded window via the
+    ``(session_id, trade_id, anchor_time)`` index instead of decoding the
+    trade's whole fill ledger (arbitrary partial exits make it unbounded).
 
 Version metadata is stored in a ``schema_meta`` key/value table.  Databases
 that predate the metadata (or were created without it) are baselined from their
@@ -52,7 +58,7 @@ from __future__ import annotations
 
 import sqlite3
 
-CURRENT_SCHEMA_VERSION = 7
+CURRENT_SCHEMA_VERSION = 8
 
 _VERSION_KEY = "schema_version"
 
@@ -443,6 +449,32 @@ def _migrate_v7_legacy_trade_metadata(connection: sqlite3.Connection) -> None:
         _v6_backfill_session(connection, session_id, value)
 
 
+
+
+def _migrate_v8_fill_anchor_index(connection: sqlite3.Connection) -> None:
+    """Add the indexed chart-anchor column to the fills table so the
+    chart-history focus endpoint reads only the fills inside one bounded
+    window for a single trade.
+
+    The anchor is the effective chart anchor: the source candle's open
+    (``source_candle_time``), or the recorded timestamp for legacy rows —
+    v7 already backfilled ``source_candle_time`` from the timestamp, so the
+    COALESCE fallback only matters for rows predating both. Idempotent: a
+    database that already carries the column is only re-checked for the
+    index.
+    """
+    if not _has_column(connection, "fills", "anchor_time"):
+        connection.execute("ALTER TABLE fills ADD COLUMN anchor_time TEXT")
+    connection.execute(
+        "UPDATE fills SET anchor_time = COALESCE("
+        "json_extract(fill_json, '$.source_candle_time'), "
+        "json_extract(fill_json, '$.timestamp')) "
+        "WHERE anchor_time IS NULL"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS ix_fills_session_trade_anchor "
+        "ON fills(session_id, trade_id, anchor_time)"
+    )
 _MIGRATIONS = {
     1: _migrate_v1_base_schema,
     2: _migrate_v2_data_version,
@@ -451,8 +483,8 @@ _MIGRATIONS = {
     5: _migrate_v5_trade_status_and_reviews,
     6: _migrate_v6_stats_accumulator,
     7: _migrate_v7_legacy_trade_metadata,
+    8: _migrate_v8_fill_anchor_index,
 }
-
 
 def _seed_timeframe_profiles(connection: sqlite3.Connection) -> None:
     connection.executemany(

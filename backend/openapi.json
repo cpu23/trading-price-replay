@@ -30,6 +30,11 @@
           },
           "trade": {
             "$ref": "#/components/schemas/Trade"
+          },
+          "truncated": {
+            "default": false,
+            "title": "Truncated",
+            "type": "boolean"
           }
         },
         "required": [

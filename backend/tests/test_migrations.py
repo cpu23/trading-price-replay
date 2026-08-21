@@ -562,3 +562,56 @@ def test_pre_v6_backup_restores_with_exact_accumulator(tmp_path, monkeypatch):
         ).fetchall()
     reference.fills = [repository._parse_fill(json.loads(item[0])) for item in rows]
     assert calculate_stats(state) == calculate_stats_from_history(reference)
+
+
+def test_v7_database_gains_fill_anchor_index(db_path):
+    """A v7 database is upgraded to v8: the anchor_time column is backfilled
+    from each row's effective chart anchor (the source candle's open for
+    modern rows, the recorded timestamp for legacy rows) and the
+    (session_id, trade_id, anchor_time) index is created and used.
+    Re-running the migration is a byte-for-byte no-op."""
+    with sqlite3.connect(db_path) as db:
+        migrate(db)
+        modern = {
+            "id": "f1", "session_id": "s1", "trade_id": "t1",
+            "timestamp": "2026-01-02T17:01:00+00:00",
+            "source_candle_time": "2026-01-02T17:00:00+00:00",
+            "price": 1.1, "quantity": 1.0,
+        }
+        legacy = {
+            "id": "f2", "session_id": "s1", "trade_id": "t1",
+            "timestamp": "2026-01-02T17:02:00+00:00",
+            "price": 1.1, "quantity": 1.0,
+        }
+        db.execute(
+            "INSERT INTO fills(id,session_id,trade_id,fill_json,created_at) VALUES(?,?,?,?,?)",
+            ("f1", "s1", "t1", json.dumps(modern), "2026-01-02T00:00:00+00:00"))
+        db.execute(
+            "INSERT INTO fills(id,session_id,trade_id,fill_json,created_at) VALUES(?,?,?,?,?)",
+            ("f2", "s1", "t1", json.dumps(legacy), "2026-01-02T00:00:00+00:00"))
+        # Roll back to a v7 shape: no anchor column, no v8 index.
+        db.execute("DROP INDEX ix_fills_session_trade_anchor")
+        db.execute("ALTER TABLE fills DROP COLUMN anchor_time")
+        _set_version(db, 7)
+
+    with sqlite3.connect(db_path) as db:
+        migrate(db)
+        assert read_schema_version(db) == CURRENT_SCHEMA_VERSION
+        assert "anchor_time" in _columns(db, "fills")
+        assert "ix_fills_session_trade_anchor" in _indexes(db)
+        anchors = dict(db.execute("SELECT id, anchor_time FROM fills").fetchall())
+        assert anchors == {
+            "f1": "2026-01-02T17:00:00+00:00",  # the source candle's open
+            "f2": "2026-01-02T17:02:00+00:00",  # the legacy row's timestamp
+        }
+        # The windowed fill read is served by the new index, not a scan.
+        plan = db.execute(
+            "EXPLAIN QUERY PLAN SELECT fill_json FROM fills "
+            "WHERE session_id='s1' AND trade_id='t1' "
+            "AND anchor_time >= ? AND anchor_time <= ?",
+            ("2026-01-02T17:00:00+00:00", "2026-01-02T17:02:00+00:00"),
+        ).fetchone()
+        assert "ix_fills_session_trade_anchor" in plan[-1]
+        # Idempotent: a second run leaves the backfill byte-for-byte intact.
+        migrate(db)
+        assert dict(db.execute("SELECT id, anchor_time FROM fills").fetchall()) == anchors

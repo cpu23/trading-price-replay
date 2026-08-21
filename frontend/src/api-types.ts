@@ -436,6 +436,11 @@ export interface components {
                 [key: string]: components["schemas"]["IndicatorPoint"][];
             };
             trade: components["schemas"]["Trade"];
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
         };
         /** CloseRequest */
         CloseRequest: {
