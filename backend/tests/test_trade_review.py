@@ -132,7 +132,7 @@ def test_review_does_not_bump_session_revision(client):
 def test_review_works_for_trades_outside_hydrated_window(client):
     # A session whose closed history exceeds the hydrated window: the review
     # mutation must resolve the trade from the table, not the in-memory set.
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timezone
     from app.domain import Fill, ReplayState, Trade
 
     def ts(minute):
@@ -171,7 +171,7 @@ def test_review_works_for_trades_outside_hydrated_window(client):
     state.fills.insert(0, old_fill)
     repository.save_session(state, "test_seed")
 
-    patched = client.patch(f"/api/trades/old-trade/review", json={
+    patched = client.patch("/api/trades/old-trade/review", json={
         "session_id": state.id, "review_note": "old but reviewable",
     })
     assert patched.status_code == 200, patched.text

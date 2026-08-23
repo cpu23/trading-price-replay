@@ -23,6 +23,7 @@ jobs:
           cache-dependency-glob: backend/uv.lock
       - run: uv python install 3.12
       - run: uv sync --locked --dev
+      - run: uv run ruff check .
       - run: uv run pytest
       - name: Check committed OpenAPI schema matches the code
         run: |

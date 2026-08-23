@@ -299,11 +299,6 @@ def _migrate_v6_stats_accumulator(connection: sqlite3.Connection) -> None:
     report incomplete historical statistics.
     """
     import json
-    from dataclasses import asdict
-    from datetime import datetime
-
-    from .domain import ReplayState
-    from .stats import build_accumulator_from_history
 
     for row in connection.execute("SELECT id, state_json FROM replay_sessions"):
         session_id = row[0]
