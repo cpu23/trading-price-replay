@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { apiErrorDetail } from "../src/api";
 import {
+  REPLAY_STEP_SIZES,
+  canActShortcut,
+  clampFocusViewport,
+  classifyChartSeriesUpdate,
+  closeQuantityExceedsRemainder,
+  focusWithinLiveBounds,
   formatAdaptiveNumber,
   formatDuration,
   formatExecutionTime,
@@ -8,9 +14,13 @@ import {
   formatStatistic,
   fromDateTimeLocalValue,
   historyCountLabel,
+  isEditableKeyboardTarget,
   isTimestampWithinRange,
+  parsePositiveQuantity,
   parseTags,
+  quantityDraft,
   replayProgress,
+  stepSizeOptions,
   toDateTimeLocalValue,
   utcDateTime,
   validateOrderTicket,
@@ -43,7 +53,7 @@ describe("UTC datetime-local conversion", () => {
 
 describe("order ticket validation", () => {
   const baseTicket = {
-    quantity: 1,
+    quantity: "1",
     stop: "",
     target: "",
     currentPrice: 100,
@@ -81,8 +91,202 @@ describe("order ticket validation", () => {
   it("blocks repeated entry paths before a causal price is available", () => {
     expect(validateOrderTicket({ ...baseTicket, direction: "long", canEnter: false }))
       .toBe("A causal market price is required before placing an order.");
-    expect(validateOrderTicket({ ...baseTicket, direction: "long", quantity: 0 }))
+  });
+
+  it("rejects empty, non-finite, and non-positive quantity drafts with actionable messages", () => {
+    expect(validateOrderTicket({ ...baseTicket, direction: "long", quantity: "" }))
+      .toBe("Enter a quantity greater than zero.");
+    expect(validateOrderTicket({ ...baseTicket, direction: "long", quantity: "   " }))
+      .toBe("Enter a quantity greater than zero.");
+    expect(validateOrderTicket({ ...baseTicket, direction: "long", quantity: "." }))
+      .toBe("Quantity must be a finite decimal number greater than zero.");
+    expect(validateOrderTicket({ ...baseTicket, direction: "long", quantity: "abc" }))
+      .toBe("Quantity must be a finite decimal number greater than zero.");
+    expect(validateOrderTicket({ ...baseTicket, direction: "long", quantity: "1e999" }))
+      .toBe("Quantity must be a finite decimal number greater than zero.");
+    expect(validateOrderTicket({ ...baseTicket, direction: "long", quantity: "0" }))
       .toBe("Quantity must be greater than zero.");
+    expect(validateOrderTicket({ ...baseTicket, direction: "long", quantity: "-2" }))
+      .toBe("Quantity must be greater than zero.");
+  });
+
+  it("accepts incomplete-but-valid decimal drafts and legitimate tiny quantities", () => {
+    expect(validateOrderTicket({ ...baseTicket, direction: "long", quantity: "1." })).toBeNull();
+    expect(validateOrderTicket({ ...baseTicket, direction: "long", quantity: "0.00000001" })).toBeNull();
+    expect(validateOrderTicket({ ...baseTicket, direction: "long", quantity: "0.0000000001" })).toBeNull();
+    expect(validateOrderTicket({ ...baseTicket, direction: "long", quantity: "2.5" })).toBeNull();
+  });
+});
+
+describe("quantity draft parsing", () => {
+  it("parses finite positive drafts on action and rejects everything else", () => {
+    expect(parsePositiveQuantity("1")).toBe(1);
+    expect(parsePositiveQuantity("1.")).toBe(1);
+    expect(parsePositiveQuantity("0.5")).toBe(0.5);
+    expect(parsePositiveQuantity("0.00000001")).toBe(1e-8);
+    expect(parsePositiveQuantity("0.")).toBeNull();
+    expect(parsePositiveQuantity(".")).toBeNull();
+    expect(parsePositiveQuantity("")).toBeNull();
+    expect(parsePositiveQuantity("  ")).toBeNull();
+    expect(parsePositiveQuantity("abc")).toBeNull();
+    expect(parsePositiveQuantity("1e999")).toBeNull();
+    expect(parsePositiveQuantity("-1")).toBeNull();
+    expect(parsePositiveQuantity("0")).toBeNull();
+  });
+
+  it("renders persisted quantities without precision loss", () => {
+    expect(quantityDraft(1)).toBe("1");
+    expect(quantityDraft(0.5)).toBe("0.5");
+    expect(quantityDraft(1e-8)).toBe("1e-8");
+    expect(quantityDraft(5e-324)).toBe("5e-324");
+    expect(quantityDraft(Number.NaN)).toBe("");
+  });
+
+  it("accepts float dust but rejects materially oversized closes", () => {
+    expect(closeQuantityExceedsRemainder(0.2, 0.19999999999999998)).toBe(false);
+    expect(closeQuantityExceedsRemainder(0.30000000000000004, 0.3)).toBe(false);
+    expect(closeQuantityExceedsRemainder(0.3000000001, 0.3)).toBe(true);
+    expect(closeQuantityExceedsRemainder(0.4, 0.3)).toBe(true);
+    expect(closeQuantityExceedsRemainder(1.0, 1.0 - 5e-13)).toBe(true);
+  });
+});
+
+describe("live focus bounds", () => {
+  const first = "2025-02-03T14:00:00.000Z";
+  const last = "2025-02-03T14:10:00.000Z";
+
+  it("accepts a trade span inside the revealed payload", () => {
+    expect(focusWithinLiveBounds("2025-02-03T14:01:00Z", "2025-02-03T14:09:00Z", first, last)).toBe(true);
+    expect(focusWithinLiveBounds(first, last, first, last)).toBe(true);
+  });
+
+  it("rejects spans that slid outside the live bounds", () => {
+    expect(focusWithinLiveBounds("2025-02-03T13:59:00Z", "2025-02-03T14:02:00Z", first, last)).toBe(false);
+    expect(focusWithinLiveBounds("2025-02-03T14:02:00Z", "2025-02-03T14:11:00Z", first, last)).toBe(false);
+  });
+
+  it("rejects when the live payload has no bounds", () => {
+    expect(focusWithinLiveBounds("2025-02-03T14:01:00Z", "2025-02-03T14:02:00Z", undefined, undefined)).toBe(false);
+    expect(focusWithinLiveBounds("2025-02-03T14:01:00Z", "2025-02-03T14:02:00Z", first, undefined)).toBe(false);
+  });
+});
+
+describe("focus viewport clamping", () => {
+  it("clamps a truncated trade's span to the returned window's last bar", () => {
+    // The trade reaches 5000s but the bounded window ends at 2000s.
+    expect(clampFocusViewport(1000, 5000, { first: 1000, last: 2000 }))
+      .toEqual({ from: 1000, to: 2000 });
+  });
+
+  it("clamps a window that starts after the trade's entry", () => {
+    expect(clampFocusViewport(900, 1800, { first: 1000, last: 2000 }))
+      .toEqual({ from: 1000, to: 1800 });
+  });
+
+  it("keeps the breathing margin inside the returned bar bounds", () => {
+    // Margin wants 300s but only 200s of slack exists on the right.
+    expect(clampFocusViewport(1500, 1700, { first: 1000, last: 2000 }))
+      .toEqual({ from: 1200, to: 2000 });
+    // Margin is fully available on both sides.
+    expect(clampFocusViewport(1500, 1600, { first: 1000, last: 2000 }))
+      .toEqual({ from: 1200, to: 1900 });
+  });
+
+  it("never extends past the window edges even for single-candle trades", () => {
+    expect(clampFocusViewport(1000, 1000, { first: 1000, last: 2000 }))
+      .toEqual({ from: 1000, to: 1000 });
+    expect(clampFocusViewport(2000, 2000, { first: 1000, last: 2000 }))
+      .toEqual({ from: 2000, to: 2000 });
+  });
+
+  it("shows the whole window when the trade span does not intersect it", () => {
+    expect(clampFocusViewport(300, 400, { first: 1000, last: 2000 }))
+      .toEqual({ from: 1000, to: 2000 });
+    expect(clampFocusViewport(3000, 3100, { first: 1000, last: 2000 }))
+      .toEqual({ from: 1000, to: 2000 });
+  });
+
+  it("applies the plain margin for a live zoom without server bounds", () => {
+    expect(clampFocusViewport(1500, 1600, null)).toEqual({ from: 1200, to: 1900 });
+  });
+});
+
+describe("step size options", () => {
+  it("offers the standard list for persisted values it contains", () => {
+    expect(stepSizeOptions(5)).toEqual(REPLAY_STEP_SIZES);
+  });
+
+  it("retains a valid off-list persisted step size instead of blanking the control", () => {
+    expect(stepSizeOptions(7)).toEqual([1, 2, 3, 5, 7, 10, 15]);
+    expect(stepSizeOptions(20)).toEqual([1, 2, 3, 5, 10, 15, 20]);
+  });
+
+  it("ignores invalid persisted values", () => {
+    expect(stepSizeOptions(0)).toEqual(REPLAY_STEP_SIZES);
+    expect(stepSizeOptions(-2)).toEqual(REPLAY_STEP_SIZES);
+    expect(stepSizeOptions(Number.NaN)).toEqual(REPLAY_STEP_SIZES);
+    expect(stepSizeOptions(2.5)).toEqual(REPLAY_STEP_SIZES);
+  });
+});
+
+describe("shortcut semantics", () => {
+  it("suppresses transport shortcuts while busy or once completed", () => {
+    expect(canActShortcut(false, "active")).toBe(true);
+    expect(canActShortcut(true, "active")).toBe(false);
+    expect(canActShortcut(false, "completed")).toBe(false);
+    expect(canActShortcut(true, "completed")).toBe(false);
+  });
+
+  it("leaves keystrokes alone while typing in editable controls", () => {
+    expect(isEditableKeyboardTarget({ tagName: "INPUT" })).toBe(true);
+    expect(isEditableKeyboardTarget({ tagName: "textarea" })).toBe(true);
+    expect(isEditableKeyboardTarget({ tagName: "SELECT" })).toBe(true);
+    expect(isEditableKeyboardTarget({ tagName: "BUTTON" })).toBe(true);
+    expect(isEditableKeyboardTarget({ isContentEditable: true })).toBe(true);
+    expect(isEditableKeyboardTarget({ tagName: "DIV" })).toBe(false);
+    expect(isEditableKeyboardTarget(null)).toBe(false);
+  });
+});
+
+describe("chart series update classification", () => {
+  it("uses tail updates for one new bar and a changed aggregate tail", () => {
+    const previous = { length: 2, first: 100, last: 200, penultimate: 100 };
+    expect(classifyChartSeriesUpdate(
+      previous,
+      { length: 3, first: 100, last: 300, penultimate: 200 },
+      true,
+    )).toBe("update");
+    expect(classifyChartSeriesUpdate(previous, previous, true)).toBe("update");
+    expect(classifyChartSeriesUpdate(previous, previous, false)).toBe("none");
+  });
+
+  it("replaces rolling, gapped, multi-step, and cleared series", () => {
+    const previous = { length: 2, first: 100, last: 200, penultimate: 100 };
+    expect(classifyChartSeriesUpdate(
+      previous,
+      { length: 2, first: 200, last: 300, penultimate: 200 },
+      true,
+    )).toBe("replace");
+    expect(classifyChartSeriesUpdate(
+      previous,
+      { length: 2, first: 100, last: 300, penultimate: 100 },
+      true,
+    )).toBe("replace");
+    expect(classifyChartSeriesUpdate(
+      previous,
+      { length: 4, first: 100, last: 400, penultimate: 300 },
+      true,
+    )).toBe("replace");
+    expect(classifyChartSeriesUpdate(
+      previous,
+      { length: 0, first: null, last: null, penultimate: null },
+      true,
+    )).toBe("replace");
+    expect(classifyChartSeriesUpdate(
+      { length: 0, first: null, last: null, penultimate: null },
+      { length: 1, first: 100, last: 100, penultimate: null },
+      true,
+    )).toBe("replace");
   });
 });
 
@@ -111,6 +315,7 @@ describe("statistic formatting", () => {
     expect(formatStatistic("long_pnl", 4.125, "USD")).toBe("4.13 USD");
     expect(formatStatistic("total_r", -0.5, "USD")).toBe("-0.50 R");
     expect(formatStatistic("profit_factor", 1.6962, "USD")).toBe("1.70");
+    expect(formatStatistic("average_r", null, "USD")).toBe("—");
     expect(formatStatistic("median_r", 0.25, "USD")).toBe("0.25 R");
     expect(formatStatistic("average_win_r", 1.2, "USD")).toBe("1.20 R");
     expect(formatStatistic("average_losing_r", -0.4, "USD")).toBe("-0.40 R");

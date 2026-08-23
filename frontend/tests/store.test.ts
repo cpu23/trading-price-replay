@@ -8,7 +8,7 @@ import {
   mergeUpdate,
   useReplayStore,
 } from "../src/store";
-import type { Fill, ReplaySnapshot, ReplayUpdate, Trade } from "../src/types";
+import type { Fill, FillHistoryPage, ReplaySnapshot, ReplayUpdate, Trade, TradeHistoryPage } from "../src/types";
 
 vi.mock("../src/api", () => ({
   ApiError: class ApiError extends Error {
@@ -612,6 +612,56 @@ describe("store: paginated older history", () => {
     store().installSnapshot(snapshot({ revision: 2 }));
     expect(store().olderClosedTrades).toEqual([]);
     expect(store().tradesCursor).toBeNull();
+  });
+
+  it("does not merge an older session's trade page into a newer session", async () => {
+    const pending = deferred<TradeHistoryPage>();
+    store().installSnapshot(snapshot({
+      id: "session-a",
+      trades: [trade("a-in-window", "closed")],
+      closed_trades_total: 2,
+      closed_trades_truncated: true,
+    }));
+    vi.mocked(api.getTrades).mockReturnValue(pending.promise);
+
+    const completion = store().loadOlderTrades();
+    expect(store().historyLoading).toBe(true);
+    store().installSnapshot(snapshot({
+      id: "session-b",
+      trades: [{ ...trade("b-current", "closed"), session_id: "session-b" }],
+    }));
+    pending.resolve({
+      items: [{ ...trade("a-older", "closed"), session_id: "session-a" }],
+      total: 2,
+      next_cursor: null,
+    });
+    await completion;
+
+    expect(store().replay?.id).toBe("session-b");
+    expect(store().olderClosedTrades).toEqual([]);
+    expect(store().historyLoading).toBe(false);
+    expect(store().error).toBeNull();
+  });
+
+  it("does not surface an older session's fill-page failure in a newer session", async () => {
+    const pending = deferred<FillHistoryPage>();
+    store().installSnapshot(snapshot({
+      id: "session-a",
+      fills: [fill("a-in-window")],
+      fills_total: 2,
+      fills_truncated: true,
+    }));
+    vi.mocked(api.getFills).mockReturnValue(pending.promise);
+
+    const completion = store().loadOlderFills();
+    store().installSnapshot(snapshot({ id: "session-b" }));
+    pending.reject(new Error("session A failed"));
+    await completion;
+
+    expect(store().replay?.id).toBe("session-b");
+    expect(store().olderFills).toEqual([]);
+    expect(store().historyLoading).toBe(false);
+    expect(store().error).toBeNull();
   });
 });
 

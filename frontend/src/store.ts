@@ -174,6 +174,10 @@ type ReplayStore = {
 };
 
 let actionGeneration = 0;
+// Guards paginated history loads against leave/resume session races: a page
+// that resolves after the session was left, resumed, or reconciled must not
+// merge into (or clear the loading flag of) a newer session's history.
+let historyLoadGeneration = 0;
 
 export const useReplayStore = create<ReplayStore>((set, get) => ({
   symbols: [],
@@ -231,6 +235,7 @@ export const useReplayStore = create<ReplayStore>((set, get) => ({
   },
 
   installSnapshot: (snapshot) => {
+    historyLoadGeneration += 1;
     localStorage.setItem(SESSION_STORAGE_KEY, snapshot.id);
     // The snapshot window holds the most recent closed trades / fills; when
     // it is truncated, the first older page starts just past its oldest row.
@@ -297,6 +302,7 @@ export const useReplayStore = create<ReplayStore>((set, get) => ({
   loadOlderTrades: async () => {
     const { replay, tradesCursor, historyLoading } = get();
     if (!replay || !tradesCursor || historyLoading) return;
+    const generation = ++historyLoadGeneration;
     set({ historyLoading: true, error: null });
     try {
       const page = await api.getTrades(replay.id, {
@@ -304,6 +310,9 @@ export const useReplayStore = create<ReplayStore>((set, get) => ({
         limit: RECENT_CLOSED_TRADES_LIMIT,
         cursor: tradesCursor,
       });
+      // A leave/resume or reconciliation while the page was in flight must
+      // not merge this page into a newer session's history.
+      if (generation !== historyLoadGeneration) return;
       const known = new Set([
         ...get().replay?.trades ?? [],
         ...get().olderClosedTrades,
@@ -314,21 +323,24 @@ export const useReplayStore = create<ReplayStore>((set, get) => ({
         tradesCursor: page.next_cursor,
       });
     } catch (error) {
+      if (generation !== historyLoadGeneration) return;
       set({ error: `Could not load older trade history: ${errorMessage(error)}` });
     } finally {
-      set({ historyLoading: false });
+      if (generation === historyLoadGeneration) set({ historyLoading: false });
     }
   },
 
   loadOlderFills: async () => {
     const { replay, fillsCursor, historyLoading } = get();
     if (!replay || !fillsCursor || historyLoading) return;
+    const generation = ++historyLoadGeneration;
     set({ historyLoading: true, error: null });
     try {
       const page = await api.getFills(replay.id, {
         limit: 500,
         cursor: fillsCursor,
       });
+      if (generation !== historyLoadGeneration) return;
       const known = new Set([
         ...get().replay?.fills ?? [],
         ...get().olderFills,
@@ -339,9 +351,10 @@ export const useReplayStore = create<ReplayStore>((set, get) => ({
         fillsCursor: page.next_cursor,
       });
     } catch (error) {
+      if (generation !== historyLoadGeneration) return;
       set({ error: `Could not load older fill history: ${errorMessage(error)}` });
     } finally {
-      set({ historyLoading: false });
+      if (generation === historyLoadGeneration) set({ historyLoading: false });
     }
   },
 
@@ -373,6 +386,7 @@ export const useReplayStore = create<ReplayStore>((set, get) => ({
 
   leave: () => {
     actionGeneration += 1;
+    historyLoadGeneration += 1;
     localStorage.removeItem(SESSION_STORAGE_KEY);
     set({
       replay: null,

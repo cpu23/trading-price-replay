@@ -34,9 +34,35 @@ export function validateReplayRange(
   return null;
 }
 
+/** The quantity controls are string-backed so empty and incomplete decimal
+ * drafts (`""`, `.`, `0.`, `1.`) survive editing; the draft is parsed only
+ * when the user acts on it. */
+const DECIMAL_NUMBER = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
+
+export function parsePositiveQuantity(raw: string): number | null {
+  const trimmed = raw.trim();
+  if (!DECIMAL_NUMBER.test(trimmed)) return null;
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return parsed;
+}
+
+/** Render a persisted finite quantity without grouping or precision loss. */
+export function quantityDraft(value: number): string {
+  return Number.isFinite(value) ? String(value) : "";
+}
+
+/** Mirror the backend's ULP-scaled oversize distinction for immediate ticket
+ * feedback. The server remains authoritative and canonicalizes the result. */
+export function closeQuantityExceedsRemainder(requested: number, remaining: number): boolean {
+  const scale = Math.max(Math.abs(requested), Math.abs(remaining), Number.MIN_VALUE);
+  const tolerance = 256 * Number.EPSILON * scale;
+  return requested - remaining > tolerance;
+}
+
 export type OrderTicketValues = {
   direction: TradeDirection;
-  quantity: number;
+  quantity: string;
   stop: string;
   target: string;
   currentPrice: number | null;
@@ -47,8 +73,16 @@ export function validateOrderTicket(values: OrderTicketValues): string | null {
   if (!values.canEnter || values.currentPrice === null || !Number.isFinite(values.currentPrice)) {
     return "A causal market price is required before placing an order.";
   }
-  if (!Number.isFinite(values.quantity) || values.quantity <= 0) {
-    return "Quantity must be greater than zero.";
+  const quantityText = values.quantity.trim();
+  if (quantityText === "") {
+    return "Enter a quantity greater than zero.";
+  }
+  const quantity = parsePositiveQuantity(quantityText);
+  if (quantity === null) {
+    if (DECIMAL_NUMBER.test(quantityText) && Number(quantityText) <= 0) {
+      return "Quantity must be greater than zero.";
+    }
+    return "Quantity must be a finite decimal number greater than zero.";
   }
 
   const stop = values.stop.trim() === "" ? null : Number(values.stop);
@@ -119,6 +153,115 @@ export function isTimestampWithinRange(
     && Number.isFinite(last)
     && first <= value
     && value <= last;
+}
+
+/** Whether a focused trade's entry-to-exit span still lies inside the live
+ * chart payload's revealed bar bounds. A live-window focus needs no server
+ * fetch while this holds; once the replay slides the trade out, a bounded
+ * window must be fetched instead. */
+export function focusWithinLiveBounds(
+  fromTimestamp: string,
+  toTimestamp: string,
+  firstBarTimestamp: string | undefined,
+  lastBarTimestamp: string | undefined,
+): boolean {
+  if (!firstBarTimestamp || !lastBarTimestamp) return false;
+  return Date.parse(fromTimestamp) >= Date.parse(firstBarTimestamp)
+    && Date.parse(toTimestamp) <= Date.parse(lastBarTimestamp);
+}
+
+/** Chart bar time bounds in epoch seconds. */
+export type BarTimeBounds = { first: number; last: number };
+
+/** Derive the visible range for a focused trade. With a bounded server
+ * window the viewport is clamped to the returned bar bounds — the trade's
+ * full span may reach beyond the window (truncated trades, causal clamps),
+ * and the viewport must never show unavailable bars. Without bounds (a live
+ * zoom) the trade span plus a margin is used as before. */
+export function clampFocusViewport(
+  tradeFrom: number,
+  tradeTo: number,
+  barBounds: BarTimeBounds | null,
+): { from: number; to: number } {
+  let from = tradeFrom;
+  let to = tradeTo;
+  if (barBounds) {
+    from = Math.max(from, barBounds.first);
+    to = Math.min(to, barBounds.last);
+    if (to < from) {
+      // The trade's span does not intersect the returned window at all:
+      // show the window itself instead of an empty viewport.
+      return { from: barBounds.first, to: barBounds.last };
+    }
+  }
+  const span = Math.max(to - from, 60);
+  let margin = Math.max(span * 0.1, 300);
+  if (barBounds) {
+    margin = Math.max(Math.min(margin, from - barBounds.first, barBounds.last - to), 0);
+    return {
+      from: Math.max(from - margin, barBounds.first),
+      to: Math.min(to + margin, barBounds.last),
+    };
+  }
+  return { from: from - margin, to: to + margin };
+}
+
+/** Standard step-size choices offered by the step-size control. */
+export const REPLAY_STEP_SIZES = [1, 2, 3, 5, 10, 15];
+
+/** The step-size select options. A persisted step size outside the standard
+ * list (e.g. an older session) is kept selectable instead of rendering a
+ * blank control. */
+export function stepSizeOptions(persistedStepMinutes: number): number[] {
+  if (Number.isInteger(persistedStepMinutes) && persistedStepMinutes > 0
+    && !REPLAY_STEP_SIZES.includes(persistedStepMinutes)) {
+    return [...REPLAY_STEP_SIZES, persistedStepMinutes].sort((left, right) => left - right);
+  }
+  return REPLAY_STEP_SIZES;
+}
+
+export type ChartSeriesUpdate = "none" | "update" | "replace";
+export type ChartSeriesBoundary = {
+  length: number;
+  first: number | null;
+  last: number | null;
+  penultimate: number | null;
+};
+
+/** Classify the minimum exactly-equivalent Lightweight Charts series change.
+ * Revealed bars are immutable except for the current aggregate tail. */
+export function classifyChartSeriesUpdate(
+  previous: ChartSeriesBoundary,
+  next: ChartSeriesBoundary,
+  tailChanged: boolean,
+): ChartSeriesUpdate {
+  if (next.length === 0) return previous.length === 0 ? "none" : "replace";
+  if (previous.length === 0 || previous.first === null || previous.last === null) return "replace";
+  if (next.first !== previous.first) return "replace";
+  if (next.length === previous.length) {
+    if (next.last !== previous.last) return "replace";
+    return tailChanged ? "update" : "none";
+  }
+  if (next.length === previous.length + 1 && next.penultimate === previous.last) return "update";
+  return "replace";
+}
+
+/** Transport shortcuts are suppressed while a mutation is busy and once the
+ * replay is completed; Space also always consumes the key so the page does
+ * not scroll. */
+export function canActShortcut(busy: boolean, status: string): boolean {
+  return !busy && status !== "completed";
+}
+
+/** A keydown whose target is an editable control is left alone so typing in
+ * quantity/price fields never triggers a replay shortcut. */
+export function isEditableKeyboardTarget(
+  target: { isContentEditable?: boolean; tagName?: string } | null,
+): boolean {
+  if (!target) return false;
+  if (target.isContentEditable) return true;
+  const tag = target.tagName?.toUpperCase();
+  return tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA" || tag === "BUTTON";
 }
 
 const INTEGER_STATISTICS: Record<string, true> = {
@@ -204,7 +347,8 @@ export function formatDuration(totalSeconds: number): string {
   return parts.join(" ");
 }
 
-export function formatStatistic(name: string, value: number, currency: string): string {
+export function formatStatistic(name: string, value: number | null, currency: string): string {
+  if (value === null || !Number.isFinite(value)) return "—";
   if (INTEGER_STATISTICS[name]) return formatNumber(value, 0);
   if (name === "win_rate") return `${formatNumber(value)}%`;
   if (name === "average_holding_seconds") return formatDuration(value);
