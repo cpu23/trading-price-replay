@@ -149,15 +149,66 @@ def test_backfill_reconstruction_matches_incremental_accumulator():
         )
 
 
-def test_empty_session_stats_are_zero_and_equivalent():
-    state = make_state()
-    inc = calculate_stats(state, 100.0, 1.0)
-    hist = calculate_stats_from_history(state, 100.0, 1.0)
-    _assert_stats_close(inc, hist, "empty session")
-    assert inc["trades_opened"] == 0
-    assert inc["balance"] == state.initial_balance
-    assert inc["max_drawdown"] == 0.0
+def test_undefined_statistics_are_null_while_totals_remain_numeric():
+    empty = make_state()
+    empty_stats = calculate_stats(empty, 100.0, 1.0)
+    _assert_stats_close(empty_stats, calculate_stats_from_history(empty, 100.0, 1.0), "empty")
+    for name in (
+        "win_rate", "average_r", "average_win_r", "average_losing_r", "average_win",
+        "average_loss", "profit_factor", "average_holding_seconds",
+    ):
+        assert empty_stats[name] is None
+    assert empty_stats["trades_completed"] == 0
+    assert empty_stats["net_pnl"] == 0.0
+    assert empty_stats["total_r"] == 0.0
+    assert empty_stats["balance"] == empty.initial_balance
+    assert empty_stats["max_drawdown"] == 0.0
 
+    winner = make_state()
+    winner_trade = open_trade(winner, ts(0), 100.0, "long", 1.0, 99.0, None, 1.0)
+    close_trade(winner, winner_trade, ts(1), 102.0, 1.0, "manual", 1.0)
+    winner_stats = calculate_stats(winner)
+    _assert_stats_close(winner_stats, calculate_stats_from_history(winner), "all-winning")
+    assert winner_stats["win_rate"] == 100.0
+    assert winner_stats["average_win"] == 2.0
+    assert winner_stats["average_loss"] is None
+    assert winner_stats["profit_factor"] is None
+    assert winner_stats["average_win_r"] == 2.0
+    assert winner_stats["average_losing_r"] is None
+
+    loser = make_state()
+    loser_trade = open_trade(loser, ts(0), 100.0, "long", 1.0, 99.0, None, 1.0)
+    close_trade(loser, loser_trade, ts(1), 98.0, 1.0, "manual", 1.0)
+    loser_stats = calculate_stats(loser)
+    _assert_stats_close(loser_stats, calculate_stats_from_history(loser), "all-losing")
+    assert loser_stats["win_rate"] == 0.0
+    assert loser_stats["average_win"] is None
+    assert loser_stats["average_loss"] == -2.0
+    assert loser_stats["profit_factor"] == 0.0
+    assert loser_stats["average_win_r"] is None
+    assert loser_stats["average_losing_r"] == -2.0
+
+    mixed = make_state()
+    mixed_win = open_trade(mixed, ts(0), 100.0, "long", 1.0, 99.0, None, 1.0)
+    close_trade(mixed, mixed_win, ts(1), 102.0, 1.0, "manual", 1.0)
+    mixed_loss = open_trade(mixed, ts(2), 100.0, "long", 1.0, 99.0, None, 1.0)
+    close_trade(mixed, mixed_loss, ts(3), 99.0, 1.0, "manual", 1.0)
+    mixed_stats = calculate_stats(mixed)
+    _assert_stats_close(mixed_stats, calculate_stats_from_history(mixed), "mixed")
+    assert mixed_stats["win_rate"] == 50.0
+    assert mixed_stats["average_r"] == 0.5
+    assert mixed_stats["profit_factor"] == 2.0
+    assert mixed_stats["average_holding_seconds"] == 60.0
+
+    no_risk = make_state()
+    no_risk_trade = open_trade(no_risk, ts(0), 100.0, "long", 1.0, None, None, 1.0)
+    close_trade(no_risk, no_risk_trade, ts(1), 101.0, 1.0, "manual", 1.0)
+    no_risk_stats = calculate_stats(no_risk)
+    _assert_stats_close(no_risk_stats, calculate_stats_from_history(no_risk), "no-risk")
+    assert no_risk_stats["total_r"] == 0.0
+    assert no_risk_stats["average_r"] is None
+    assert no_risk_stats["average_win_r"] is None
+    assert no_risk_stats["average_losing_r"] is None
 
 def test_partial_close_is_not_double_counted():
     state = make_state()

@@ -178,7 +178,7 @@ class Fill(BaseModel):
 class SessionStats(BaseModel):
     trades_opened: int
     trades_completed: int
-    win_rate: float
+    win_rate: float | None
     net_pnl: float
     gross_pnl: float
     trading_costs: float
@@ -189,16 +189,16 @@ class SessionStats(BaseModel):
     balance: float
     equity: float
     total_r: float
-    average_r: float
-    average_win_r: float
-    average_losing_r: float
-    average_win: float
-    average_loss: float
-    profit_factor: float
+    average_r: float | None
+    average_win_r: float | None
+    average_losing_r: float | None
+    average_win: float | None
+    average_loss: float | None
+    profit_factor: float | None
     max_drawdown: float
     long_pnl: float
     short_pnl: float
-    average_holding_seconds: float
+    average_holding_seconds: float | None
 
 
 class SessionSummary(BaseModel):

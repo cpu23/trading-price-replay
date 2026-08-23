@@ -227,9 +227,10 @@ def test_open_and_partial_trades_do_not_distort_completed_stats():
     assert stats["trades_completed"] == 1
     assert stats["win_rate"] == 100.0
     assert stats["average_win"] == pytest.approx(1.0)
-    assert stats["average_loss"] == 0.0
-    assert stats["profit_factor"] == 0.0  # no completed losses
+    assert stats["average_loss"] is None
+    assert stats["profit_factor"] is None  # undefined without a completed loss
     assert stats["total_r"] == 0.0  # winner carries no stop, hence no R value
+    assert stats["average_r"] is None
     assert stats["long_pnl"] == pytest.approx(1.0)
     assert stats["short_pnl"] == pytest.approx(1.0)
     assert stats["unrealized_pnl"] == pytest.approx(0.0)  # short remainder +0.5 offsets open long -0.5 at 9.5

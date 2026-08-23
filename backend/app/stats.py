@@ -60,7 +60,7 @@ def book_trade_close(state: ReplayState, trade: Trade, exit_time: datetime | Non
 
 
 def calculate_stats(state: ReplayState, current_market_price: float | None = None,
-                    contract_multiplier: float | None = None) -> dict[str, float | int]:
+                    contract_multiplier: float | None = None) -> dict[str, float | int | None]:
     """Session statistics from the persisted accumulator plus current open risk.
 
     Historical metrics (P&L, costs, trade counts, R, drawdown, holding) come
@@ -106,7 +106,7 @@ def calculate_stats(state: ReplayState, current_market_price: float | None = Non
     return {
         "trades_opened": acc.trades_opened,
         "trades_completed": completed,
-        "win_rate": acc.winning_trades / completed * 100 if completed else 0,
+        "win_rate": acc.winning_trades / completed * 100 if completed else None,
         "net_pnl": net_pnl,
         "gross_pnl": acc.gross_pnl_sum,
         "trading_costs": acc.commission_sum + acc.spread_cost_sum + acc.slippage_sum,
@@ -117,21 +117,21 @@ def calculate_stats(state: ReplayState, current_market_price: float | None = Non
         "balance": balance,
         "equity": equity,
         "total_r": r_sum,
-        "average_r": r_sum / r_count if r_count else 0,
-        "average_win_r": acc.winning_r_sum / acc.winning_r_count if acc.winning_r_count else 0,
-        "average_losing_r": acc.losing_r_sum / acc.losing_r_count if acc.losing_r_count else 0,
-        "average_win": acc.winning_pnl_sum / acc.winning_trades if acc.winning_trades else 0,
-        "average_loss": acc.losing_pnl_sum / acc.losing_trades if acc.losing_trades else 0,
-        "profit_factor": acc.winning_pnl_sum / abs(acc.losing_pnl_sum) if acc.losing_pnl_sum else 0,
+        "average_r": r_sum / r_count if r_count else None,
+        "average_win_r": acc.winning_r_sum / acc.winning_r_count if acc.winning_r_count else None,
+        "average_losing_r": acc.losing_r_sum / acc.losing_r_count if acc.losing_r_count else None,
+        "average_win": acc.winning_pnl_sum / acc.winning_trades if acc.winning_trades else None,
+        "average_loss": acc.losing_pnl_sum / acc.losing_trades if acc.losing_trades else None,
+        "profit_factor": acc.winning_pnl_sum / abs(acc.losing_pnl_sum) if acc.losing_pnl_sum else None,
         "max_drawdown": max_drawdown,
         "long_pnl": acc.long_pnl_sum,
         "short_pnl": acc.short_pnl_sum,
-        "average_holding_seconds": acc.holding_seconds_sum / completed if completed else 0,
+        "average_holding_seconds": acc.holding_seconds_sum / completed if completed else None,
     }
 
 
 def calculate_stats_from_history(state: ReplayState, current_market_price: float | None = None,
-                                 contract_multiplier: float | None = None) -> dict[str, float | int]:
+                                 contract_multiplier: float | None = None) -> dict[str, float | int | None]:
     """The previous full-history calculation, retained as the reference
     implementation for legacy backfill equivalence checks and tests."""
     closed = [trade for trade in state.trades if trade.status == "closed"]
@@ -184,7 +184,7 @@ def calculate_stats_from_history(state: ReplayState, current_market_price: float
     return {
         "trades_opened": len(state.trades),
         "trades_completed": len(closed),
-        "win_rate": len(wins) / len(closed) * 100 if closed else 0,
+        "win_rate": len(wins) / len(closed) * 100 if closed else None,
         "net_pnl": net_pnl,
         "gross_pnl": gross_pnl,
         "trading_costs": trading_costs,
@@ -195,16 +195,16 @@ def calculate_stats_from_history(state: ReplayState, current_market_price: float
         "balance": balance,
         "equity": equity,
         "total_r": sum(r_values),
-        "average_r": sum(r_values) / len(r_values) if r_values else 0,
-        "average_win_r": sum(winning_r) / len(winning_r) if winning_r else 0,
-        "average_losing_r": sum(losing_r) / len(losing_r) if losing_r else 0,
-        "average_win": sum(wins) / len(wins) if wins else 0,
-        "average_loss": sum(losses) / len(losses) if losses else 0,
-        "profit_factor": sum(wins) / abs(sum(losses)) if losses else 0,
+        "average_r": sum(r_values) / len(r_values) if r_values else None,
+        "average_win_r": sum(winning_r) / len(winning_r) if winning_r else None,
+        "average_losing_r": sum(losing_r) / len(losing_r) if losing_r else None,
+        "average_win": sum(wins) / len(wins) if wins else None,
+        "average_loss": sum(losses) / len(losses) if losses else None,
+        "profit_factor": sum(wins) / abs(sum(losses)) if losses else None,
         "max_drawdown": max_drawdown,
         "long_pnl": sum(trade.realized_pnl for trade in state.trades if trade.direction == "long"),
         "short_pnl": sum(trade.realized_pnl for trade in state.trades if trade.direction == "short"),
-        "average_holding_seconds": holding_seconds / len(closed) if closed else 0,
+        "average_holding_seconds": holding_seconds / len(closed) if closed else None,
     }
 
 
