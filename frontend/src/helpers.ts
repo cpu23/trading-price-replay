@@ -211,7 +211,6 @@ export function tradeFocusEnd(
   return trade.exit_time ?? trade.entry_source_candle_time ?? trade.entry_time;
 }
 
-/** Chart bar time bounds in epoch seconds. */
 export type BarTimeBounds = { first: number; last: number };
 
 /** Clamp a captured epoch-second viewport to the live bars that still
@@ -232,7 +231,7 @@ export function intersectTimeRangeWithBarBounds(
   ) return null;
   const from = Math.max(range.from, barBounds.first);
   const to = Math.min(range.to, barBounds.last);
-  return from <= to ? { from, to } : null;
+  return from < to ? { from, to } : null;
 }
 
 /** Derive the visible range for a focused trade. With a bounded server

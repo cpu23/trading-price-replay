@@ -271,6 +271,7 @@ describe("captured live viewport intersection", () => {
 
   it("returns null when the captured range no longer overlaps live bars", () => {
     expect(intersectTimeRangeWithBarBounds({ from: 400, to: 900 }, liveBounds)).toBeNull();
+    expect(intersectTimeRangeWithBarBounds({ from: 900, to: 1000 }, liveBounds)).toBeNull();
   });
 });
 

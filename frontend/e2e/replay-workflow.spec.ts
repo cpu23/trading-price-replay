@@ -160,18 +160,18 @@ test("persists review notes and tags across a reload", async ({ page, request })
   await expect(reloaded.locator(".tag-chip", { hasText: "deterministic" })).toBeVisible();
 });
 
-test("focuses the chart on a closed trade and returns to the latest area", async ({ page, request }) => {
+test("focuses the chart on a closed trade and returns to the live chart", async ({ page, request }) => {
   await seedClosedTrade(request);
   await openWorkspace(page);
 
   const review = page.getByLabel("Closed trades").locator(".trade-review").first();
   await review.getByRole("button", { name: "Focus on chart" }).click();
 
-  const backToLatest = page.getByRole("button", { name: "Return chart to the latest replay area" });
-  await expect(backToLatest).toBeVisible();
+  const returnToLive = page.getByRole("button", { name: "Return to live chart" });
+  await expect(returnToLive).toBeVisible();
 
-  await backToLatest.click();
-  await expect(backToLatest).toBeHidden();
+  await returnToLive.click();
+  await expect(returnToLive).toBeHidden();
 });
 
 test("loads older closed-trade and fill history, then keeps stepping live", async ({ page, request }) => {
@@ -291,7 +291,7 @@ test("focuses a closed trade older than the live chart window via a bounded hist
 
     const focusButtons = page.getByLabel("Closed trades").getByRole("button", { name: "Focus on chart" });
     await expect(focusButtons).toHaveCount(2);
-    const backToLatest = page.getByRole("button", { name: "Return chart to the latest replay area" });
+    const returnToLive = page.getByRole("button", { name: "Return to live chart" });
 
     // A delayed failure for trade A cannot replace a successful newer focus B.
     await focusButtons.nth(0).click();
@@ -304,9 +304,9 @@ test("focuses a closed trade older than the live chart window via a bounded hist
     releaseFirst();
     await firstSettledPromise;
     await expect(page.getByText("Could not load the historical chart window")).toBeHidden();
-    await expect(backToLatest).toBeVisible();
-    await backToLatest.click();
-    await expect(backToLatest).toBeHidden();
+    await expect(returnToLive).toBeVisible();
+    await returnToLive.click();
+    await expect(returnToLive).toBeHidden();
 
     // Current failures stay visible and selected; retry shows loading and the
     // bounded-window disclosure once the successful response arrives.
@@ -320,9 +320,9 @@ test("focuses a closed trade older than the live chart window via a bounded hist
     await expect(page.getByText("Loading the historical chart window")).toBeHidden();
     await expect(page.getByText("Could not load the historical chart window")).toBeHidden();
     await expect(page.getByText("This trade's chart window is bounded")).toBeVisible();
-    await expect(backToLatest).toBeVisible();
-    await backToLatest.click();
-    await expect(backToLatest).toBeHidden();
+    await expect(returnToLive).toBeVisible();
+    await returnToLive.click();
+    await expect(returnToLive).toBeHidden();
   } finally {
     await request.delete(`/api/replay/sessions/${longSessionId}`);
   }

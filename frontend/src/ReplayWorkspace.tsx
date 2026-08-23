@@ -384,7 +384,7 @@ function ReplayWorkspaceContent({ replay }: { replay: ReplaySnapshot }) {
       {chartFocus?.status === "error" && (
         <p className="focus-status focus-status-error" role="alert">
           Could not load the historical chart window for this trade; the focus stays selected.
-          Use Back to latest to return to the live chart.
+          Use Return to live chart to leave historical focus.
         </p>
       )}
       {chartFocus?.window?.truncated && (
