@@ -220,31 +220,6 @@ export function stepSizeOptions(persistedStepMinutes: number): number[] {
   return REPLAY_STEP_SIZES;
 }
 
-export type ChartSeriesUpdate = "none" | "update" | "replace";
-export type ChartSeriesBoundary = {
-  length: number;
-  first: number | null;
-  last: number | null;
-  penultimate: number | null;
-};
-
-/** Classify the minimum exactly-equivalent Lightweight Charts series change.
- * Revealed bars are immutable except for the current aggregate tail. */
-export function classifyChartSeriesUpdate(
-  previous: ChartSeriesBoundary,
-  next: ChartSeriesBoundary,
-  tailChanged: boolean,
-): ChartSeriesUpdate {
-  if (next.length === 0) return previous.length === 0 ? "none" : "replace";
-  if (previous.length === 0 || previous.first === null || previous.last === null) return "replace";
-  if (next.first !== previous.first) return "replace";
-  if (next.length === previous.length) {
-    if (next.last !== previous.last) return "replace";
-    return tailChanged ? "update" : "none";
-  }
-  if (next.length === previous.length + 1 && next.penultimate === previous.last) return "update";
-  return "replace";
-}
 
 /** Transport shortcuts are suppressed while a mutation is busy and once the
  * replay is completed; Space also always consumes the key so the page does

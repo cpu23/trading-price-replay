@@ -4,7 +4,6 @@ import {
   REPLAY_STEP_SIZES,
   canActShortcut,
   clampFocusViewport,
-  classifyChartSeriesUpdate,
   closeQuantityExceedsRemainder,
   focusWithinLiveBounds,
   formatAdaptiveNumber,
@@ -248,47 +247,6 @@ describe("shortcut semantics", () => {
   });
 });
 
-describe("chart series update classification", () => {
-  it("uses tail updates for one new bar and a changed aggregate tail", () => {
-    const previous = { length: 2, first: 100, last: 200, penultimate: 100 };
-    expect(classifyChartSeriesUpdate(
-      previous,
-      { length: 3, first: 100, last: 300, penultimate: 200 },
-      true,
-    )).toBe("update");
-    expect(classifyChartSeriesUpdate(previous, previous, true)).toBe("update");
-    expect(classifyChartSeriesUpdate(previous, previous, false)).toBe("none");
-  });
-
-  it("replaces rolling, gapped, multi-step, and cleared series", () => {
-    const previous = { length: 2, first: 100, last: 200, penultimate: 100 };
-    expect(classifyChartSeriesUpdate(
-      previous,
-      { length: 2, first: 200, last: 300, penultimate: 200 },
-      true,
-    )).toBe("replace");
-    expect(classifyChartSeriesUpdate(
-      previous,
-      { length: 2, first: 100, last: 300, penultimate: 100 },
-      true,
-    )).toBe("replace");
-    expect(classifyChartSeriesUpdate(
-      previous,
-      { length: 4, first: 100, last: 400, penultimate: 300 },
-      true,
-    )).toBe("replace");
-    expect(classifyChartSeriesUpdate(
-      previous,
-      { length: 0, first: null, last: null, penultimate: null },
-      true,
-    )).toBe("replace");
-    expect(classifyChartSeriesUpdate(
-      { length: 0, first: null, last: null, penultimate: null },
-      { length: 1, first: 100, last: 100, penultimate: null },
-      true,
-    )).toBe("replace");
-  });
-});
 
 describe("replay progress", () => {
   it("uses revealed and remaining bars and clamps invalid values", () => {
