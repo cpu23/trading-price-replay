@@ -10,6 +10,9 @@ import copy
 import math
 import random
 from datetime import datetime, timezone
+import pytest
+
+from app.api_models import SessionStats
 
 from app.domain import Bar, ReplayState, bar_reveal_time
 from app.execution import close_trade, open_trade, process_bar, update_close_excursions
@@ -209,6 +212,21 @@ def test_undefined_statistics_are_null_while_totals_remain_numeric():
     assert no_risk_stats["average_r"] is None
     assert no_risk_stats["average_win_r"] is None
     assert no_risk_stats["average_losing_r"] is None
+
+
+def test_overflowing_r_is_undefined_and_rejected_on_the_wire():
+    state = make_state()
+    trade = open_trade(state, ts(0), 100.0, "long", 1.0, None, None, 1.0)
+    trade.initial_risk = 5e-324
+    close_trade(state, trade, ts(1), 101.0, 1.0, "manual", 1.0)
+
+    stats = calculate_stats(state)
+    reference = calculate_stats_from_history(state)
+    assert stats["total_r"] == reference["total_r"] == 0.0
+    assert stats["average_r"] is reference["average_r"] is None
+    assert SessionStats.model_validate(stats).total_r == 0.0
+    with pytest.raises(ValueError):
+        SessionStats.model_validate({**stats, "total_r": float("inf")})
 
 def test_partial_close_is_not_double_counted():
     state = make_state()

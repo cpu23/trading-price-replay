@@ -21,7 +21,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 # ---------------------------------------------------------------------------
 # Requests
@@ -176,6 +176,8 @@ class Fill(BaseModel):
 
 
 class SessionStats(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False)
+
     trades_opened: int
     trades_completed: int
     win_rate: float | None

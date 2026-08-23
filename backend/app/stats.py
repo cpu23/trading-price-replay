@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from math import isfinite
 
 from .domain import Fill, ReplayState, StatsAccumulator, Trade
 
@@ -47,14 +48,15 @@ def book_trade_close(state: ReplayState, trade: Trade, exit_time: datetime | Non
         acc.losing_pnl_sum += trade.realized_pnl
     if trade.initial_risk:
         r = trade.realized_pnl / trade.initial_risk
-        acc.r_count += 1
-        acc.r_sum += r
-        if r > 0:
-            acc.winning_r_count += 1
-            acc.winning_r_sum += r
-        elif r < 0:
-            acc.losing_r_count += 1
-            acc.losing_r_sum += r
+        if isfinite(r):
+            acc.r_count += 1
+            acc.r_sum += r
+            if r > 0:
+                acc.winning_r_count += 1
+                acc.winning_r_sum += r
+            elif r < 0:
+                acc.losing_r_count += 1
+                acc.losing_r_sum += r
     if exit_time is not None:
         acc.holding_seconds_sum += (exit_time - trade.entry_time).total_seconds()
 
@@ -168,7 +170,10 @@ def calculate_stats_from_history(state: ReplayState, current_market_price: float
         peak = max(peak, point)
         max_drawdown = max(max_drawdown, peak - point)
 
-    r_values = [trade.realized_pnl / trade.initial_risk for trade in closed if trade.initial_risk]
+    r_values = [
+        r for trade in closed
+        if trade.initial_risk and isfinite(r := trade.realized_pnl / trade.initial_risk)
+    ]
     winning_r = [value for value in r_values if value > 0]
     losing_r = [value for value in r_values if value < 0]
     # Final exit time per closed trade: the persisted exit_time, or (legacy
