@@ -923,17 +923,17 @@ export interface components {
         /** SessionStats */
         SessionStats: {
             /** Average Holding Seconds */
-            average_holding_seconds: number;
+            average_holding_seconds: number | null;
             /** Average Losing R */
-            average_losing_r: number;
+            average_losing_r: number | null;
             /** Average Loss */
-            average_loss: number;
+            average_loss: number | null;
             /** Average R */
-            average_r: number;
+            average_r: number | null;
             /** Average Win */
-            average_win: number;
+            average_win: number | null;
             /** Average Win R */
-            average_win_r: number;
+            average_win_r: number | null;
             /** Balance */
             balance: number;
             /** Commission Paid */
@@ -949,7 +949,7 @@ export interface components {
             /** Net Pnl */
             net_pnl: number;
             /** Profit Factor */
-            profit_factor: number;
+            profit_factor: number | null;
             /** Short Pnl */
             short_pnl: number;
             /** Slippage Cost */
@@ -967,7 +967,7 @@ export interface components {
             /** Unrealized Pnl */
             unrealized_pnl: number;
             /** Win Rate */
-            win_rate: number;
+            win_rate: number | null;
         };
         /** SessionSummary */
         SessionSummary: {
