@@ -20,6 +20,7 @@ import {
   quantityDraft,
   replayProgress,
   stepSizeOptions,
+  tradeFocusEnd,
   toDateTimeLocalValue,
   utcDateTime,
   validateOrderTicket,
@@ -147,6 +148,8 @@ describe("quantity draft parsing", () => {
     expect(closeQuantityExceedsRemainder(0.3000000001, 0.3)).toBe(true);
     expect(closeQuantityExceedsRemainder(0.4, 0.3)).toBe(true);
     expect(closeQuantityExceedsRemainder(1.0, 1.0 - 5e-13)).toBe(true);
+    expect(closeQuantityExceedsRemainder(2 * Number.MIN_VALUE, Number.MIN_VALUE)).toBe(false);
+    expect(closeQuantityExceedsRemainder(258 * Number.MIN_VALUE, Number.MIN_VALUE)).toBe(true);
   });
 });
 
@@ -167,6 +170,32 @@ describe("live focus bounds", () => {
   it("rejects when the live payload has no bounds", () => {
     expect(focusWithinLiveBounds("2025-02-03T14:01:00Z", "2025-02-03T14:02:00Z", undefined, undefined)).toBe(false);
     expect(focusWithinLiveBounds("2025-02-03T14:01:00Z", "2025-02-03T14:02:00Z", first, undefined)).toBe(false);
+  });
+});
+
+describe("trade focus anchors", () => {
+  it("uses the final fill's source candle instead of its later reveal timestamp", () => {
+    const trade = {
+      id: "trade-1",
+      entry_time: "2025-02-03T14:01:00Z",
+      entry_source_candle_time: "2025-02-03T14:00:00Z",
+      exit_time: "2025-02-03T14:07:00Z",
+    };
+    const fills = [
+      {
+        trade_id: "trade-1",
+        reason: "entry",
+        timestamp: "2025-02-03T14:01:00Z",
+        source_candle_time: "2025-02-03T14:00:00Z",
+      },
+      {
+        trade_id: "trade-1",
+        reason: "manual",
+        timestamp: "2025-02-03T14:07:00Z",
+        source_candle_time: "2025-02-03T14:06:00Z",
+      },
+    ];
+    expect(tradeFocusEnd(trade, fills)).toBe("2025-02-03T14:06:00Z");
   });
 });
 
@@ -263,6 +292,8 @@ describe("adaptive numeric formatting", () => {
     expect(formatAdaptiveNumber(0.00001).replace(",", ".")).toBe("0.00001");
     expect(formatAdaptiveNumber(0.00000001).replace(",", ".")).toBe("0.00000001");
     expect(formatAdaptiveNumber(1)).toBe("1");
+    expect(formatAdaptiveNumber(1e-12).replace(",", ".")).toBe("0.000000000001");
+    expect(formatAdaptiveNumber(Number.MIN_VALUE)).toBe("5e-324");
   });
 });
 

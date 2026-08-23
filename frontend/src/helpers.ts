@@ -1,4 +1,4 @@
-import type { TradeDirection } from "./types";
+import type { Fill, Trade, TradeDirection } from "./types";
 
 const DATE_TIME_LOCAL_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?$/;
 
@@ -52,11 +52,16 @@ export function quantityDraft(value: number): string {
   return Number.isFinite(value) ? String(value) : "";
 }
 
+function quantityUlp(value: number): number {
+  const magnitude = Math.abs(value);
+  if (magnitude < 2 ** -1022) return Number.MIN_VALUE;
+  return 2 ** (Math.floor(Math.log2(magnitude)) - 52);
+}
+
 /** Mirror the backend's ULP-scaled oversize distinction for immediate ticket
  * feedback. The server remains authoritative and canonicalizes the result. */
 export function closeQuantityExceedsRemainder(requested: number, remaining: number): boolean {
-  const scale = Math.max(Math.abs(requested), Math.abs(remaining), Number.MIN_VALUE);
-  const tolerance = 256 * Number.EPSILON * scale;
+  const tolerance = 256 * Math.max(quantityUlp(requested), quantityUlp(remaining));
   return requested - remaining > tolerance;
 }
 
@@ -133,9 +138,10 @@ export function formatNumber(value: number | null | undefined, fractionDigits = 
 
 export function formatAdaptiveNumber(value: number | null | undefined): string {
   if (value === null || value === undefined || !Number.isFinite(value)) return "—";
+  if (value !== 0 && Math.abs(value) < 1e-20) return String(value);
   return value.toLocaleString(undefined, {
     minimumFractionDigits: 0,
-    maximumFractionDigits: 8,
+    maximumFractionDigits: 20,
   });
 }
 
@@ -162,12 +168,26 @@ export function isTimestampWithinRange(
 export function focusWithinLiveBounds(
   fromTimestamp: string,
   toTimestamp: string,
+
   firstBarTimestamp: string | undefined,
   lastBarTimestamp: string | undefined,
 ): boolean {
   if (!firstBarTimestamp || !lastBarTimestamp) return false;
   return Date.parse(fromTimestamp) >= Date.parse(firstBarTimestamp)
     && Date.parse(toTimestamp) <= Date.parse(lastBarTimestamp);
+}
+
+export function tradeFocusEnd(
+  trade: Pick<Trade, "id" | "entry_source_candle_time" | "entry_time" | "exit_time">,
+  fills: Pick<Fill, "trade_id" | "reason" | "source_candle_time" | "timestamp">[],
+): string {
+  for (let index = fills.length - 1; index >= 0; index -= 1) {
+    const fill = fills[index];
+    if (fill.trade_id === trade.id && fill.reason !== "entry") {
+      return fill.source_candle_time ?? fill.timestamp;
+    }
+  }
+  return trade.exit_time ?? trade.entry_source_candle_time ?? trade.entry_time;
 }
 
 /** Chart bar time bounds in epoch seconds. */

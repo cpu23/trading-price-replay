@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import { ReplayChart } from "./Chart";
-import { canActShortcut, focusWithinLiveBounds, formatAdaptiveNumber, formatExecutionTime, formatMetricLabel, formatNumber, formatPrice, formatStatistic, historyCountLabel, isEditableKeyboardTarget, parsePositiveQuantity, replayProgress, stepSizeOptions, utcClock, utcDateTime, validateOrderTicket } from "./helpers";
+import { canActShortcut, focusWithinLiveBounds, formatAdaptiveNumber, formatExecutionTime, formatMetricLabel, formatNumber, formatPrice, formatStatistic, historyCountLabel, isEditableKeyboardTarget, parsePositiveQuantity, replayProgress, stepSizeOptions, tradeFocusEnd, utcClock, utcDateTime, validateOrderTicket } from "./helpers";
 import { TradeRow } from "./TradeRow";
 import { TradeReview } from "./TradeReview";
 import { useReplayStore } from "./store";
@@ -14,7 +14,7 @@ const PLAYBACK_SPEEDS = [
   { label: "2×", delay: 500 },
   { label: "4×", delay: 250 },
 ];
-const PRIMARY_STATS: (keyof ReplayStats)[] = [
+const PRIMARY_STATS = [
   "balance",
   "equity",
   "net_pnl",
@@ -24,7 +24,8 @@ const PRIMARY_STATS: (keyof ReplayStats)[] = [
   "commission_paid",
   "spread_cost",
   "slippage_cost",
-];
+] as const satisfies readonly (keyof ReplayStats)[];
+const PRIMARY_STATS_SET = new Set<keyof ReplayStats>(PRIMARY_STATS);
 
 export function ReplayWorkspace() {
   const replay = useReplayStore((state) => state.replay);
@@ -166,7 +167,7 @@ function ReplayWorkspaceContent({ replay }: { replay: ReplaySnapshot }) {
   const displayedStats = useMemo(() => {
     const primary = PRIMARY_STATS.map((name) => [name, replay.stats[name]] as const);
     const secondary = Object.entries(replay.stats)
-      .filter(([name]) => !PRIMARY_STATS.includes(name as keyof ReplayStats))
+      .filter(([name]) => !PRIMARY_STATS_SET.has(name as keyof ReplayStats))
       .sort(([left], [right]) => left.localeCompare(right));
     return { primary, secondary };
   }, [replay.stats]);
@@ -175,9 +176,9 @@ function ReplayWorkspaceContent({ replay }: { replay: ReplaySnapshot }) {
   // loading/error status changes; chart data effects key off this object.
   const chartFocusTarget = useMemo(() => chartFocus ? {
     from: chartFocus.trade.entry_source_candle_time ?? chartFocus.trade.entry_time,
-    to: chartFocus.trade.exit_time ?? chartFocus.trade.entry_source_candle_time ?? chartFocus.trade.entry_time,
+    to: tradeFocusEnd(chartFocus.trade, chartFocus.window?.fills ?? replay.fills),
     window: chartFocus.window || undefined,
-  } : null, [chartFocus?.trade, chartFocus?.window]);
+  } : null, [chartFocus?.trade, chartFocus?.window, replay.fills]);
 
   async function closeAll() {
     setConfirmCloseAll(false);
@@ -192,7 +193,7 @@ function ReplayWorkspaceContent({ replay }: { replay: ReplaySnapshot }) {
     // older trade needs a bounded historical window fetched from the server.
     const current = replayRef.current;
     const from = trade.entry_source_candle_time ?? trade.entry_time;
-    const to = trade.exit_time ?? from;
+    const to = tradeFocusEnd(trade, current.fills);
     const generation = ++focusGeneration.current;
     if (focusWithinLiveBounds(
       from,
@@ -228,7 +229,7 @@ function ReplayWorkspaceContent({ replay }: { replay: ReplaySnapshot }) {
     if (!chartFocus || chartFocus.window !== null || chartFocus.status !== "live") return;
     const current = replayRef.current;
     const from = chartFocus.trade.entry_source_candle_time ?? chartFocus.trade.entry_time;
-    const to = chartFocus.trade.exit_time ?? from;
+    const to = tradeFocusEnd(chartFocus.trade, current.fills);
     if (focusWithinLiveBounds(
       from,
       to,
@@ -414,8 +415,8 @@ function ReplayWorkspaceContent({ replay }: { replay: ReplaySnapshot }) {
           </div>
           {ticketError && <p className="inline-message message-error" role="alert">{ticketError}</p>}
           <div className="order-buttons">
-            <button className="button-buy" type="button" onClick={() => void placeOrder("long")} disabled={busy || !canEnter} aria-keyshortcuts="b">Buy / Long</button>
-            <button className="button-sell" type="button" onClick={() => void placeOrder("short")} disabled={busy || !canEnter} aria-keyshortcuts="s">Sell / Short</button>
+            <button className="button-buy" type="button" onClick={() => void placeOrder("long")} disabled={busy || !canEnter} aria-keyshortcuts="B">Buy / Long</button>
+            <button className="button-sell" type="button" onClick={() => void placeOrder("short")} disabled={busy || !canEnter} aria-keyshortcuts="S">Sell / Short</button>
           </div>
         </section>
 

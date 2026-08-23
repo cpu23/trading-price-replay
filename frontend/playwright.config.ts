@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,8 +7,9 @@ import { defineConfig } from "@playwright/test";
 const here = fileURLToPath(new URL(".", import.meta.url));
 
 // Ephemeral backend data root: e2e never touches a real session database.
-const dataRoot = process.env.PRICE_REPLAY_DATA_ROOT ?? join(tmpdir(), `trading-replay-e2e-${Date.now()}`);
-mkdirSync(dataRoot, { recursive: true });
+const dataRoot = process.env.PRICE_REPLAY_E2E_DATA_ROOT
+  ?? mkdtempSync(join(tmpdir(), "trading-replay-e2e-"));
+process.env.PRICE_REPLAY_E2E_DATA_ROOT = dataRoot;
 
 const backendUrl = "http://127.0.0.1:8123";
 const frontendUrl = "http://localhost:5199";
