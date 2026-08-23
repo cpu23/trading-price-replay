@@ -161,6 +161,27 @@ export function isTimestampWithinRange(
     && value <= last;
 }
 
+/** Stable identity for every chart-history setting that changes the returned
+ * bars or overlays. Indicator order is not semantically significant. */
+export function focusSettingsSignature(
+  visibleTimeframe: string,
+  enabledIndicators: readonly string[],
+): string {
+  return JSON.stringify([visibleTimeframe, [...enabledIndicators].sort()]);
+}
+
+/** A chart-history response is installable only for the focus request and
+ * settings that are still current when it settles. */
+export function focusRequestIsCurrent(
+  requestGeneration: number,
+  requestSettingsSignature: string,
+  currentGeneration: number,
+  currentSettingsSignature: string,
+): boolean {
+  return requestGeneration === currentGeneration
+    && requestSettingsSignature === currentSettingsSignature;
+}
+
 /** Whether a focused trade's entry-to-exit span still lies inside the live
  * chart payload's revealed bar bounds. A live-window focus needs no server
  * fetch while this holds; once the replay slides the trade out, a bounded

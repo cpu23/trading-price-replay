@@ -5,6 +5,8 @@ import {
   canActShortcut,
   clampFocusViewport,
   closeQuantityExceedsRemainder,
+  focusRequestIsCurrent,
+  focusSettingsSignature,
   focusWithinLiveBounds,
   formatAdaptiveNumber,
   formatDuration,
@@ -171,6 +173,60 @@ describe("live focus bounds", () => {
   it("rejects when the live payload has no bounds", () => {
     expect(focusWithinLiveBounds("2025-02-03T14:01:00Z", "2025-02-03T14:02:00Z", undefined, undefined)).toBe(false);
     expect(focusWithinLiveBounds("2025-02-03T14:01:00Z", "2025-02-03T14:02:00Z", first, undefined)).toBe(false);
+  });
+});
+
+describe("focus request settings", () => {
+  it("gives equivalent indicator sets the same scalar signature", () => {
+    expect(focusSettingsSignature("5m", ["sma_close_35", "ema_close_12"]))
+      .toBe(focusSettingsSignature("5m", ["ema_close_12", "sma_close_35"]));
+    expect(focusSettingsSignature("15m", ["ema_close_12", "sma_close_35"]))
+      .not.toBe(focusSettingsSignature("5m", ["ema_close_12", "sma_close_35"]));
+    expect(focusSettingsSignature("5m", ["sma_close_35"]))
+      .not.toBe(focusSettingsSignature("5m", []));
+  });
+
+  it("installs only the matching new window when settings change before the old response resolves", async () => {
+    let generation = 1;
+    let currentSettings = focusSettingsSignature("1m", []);
+    const oldGeneration = generation;
+    const oldSettings = currentSettings;
+    const installed: string[] = [];
+    let resolveOld!: (value: string) => void;
+    const oldResponse = new Promise<string>((resolve) => { resolveOld = resolve; });
+    const oldInstall = oldResponse.then((window) => {
+      if (focusRequestIsCurrent(
+        oldGeneration,
+        oldSettings,
+        generation,
+        currentSettings,
+      )) installed.push(window);
+    });
+
+    // The commit-time signature changes before the refocus can bump the
+    // generation, so this settlement is rejected specifically by settings.
+    currentSettings = focusSettingsSignature("5m", ["sma_close_35"]);
+    resolveOld("old 1m window");
+    await oldInstall;
+    expect(installed).toEqual([]);
+
+    generation += 1;
+    const newGeneration = generation;
+    const newSettings = currentSettings;
+    let resolveNew!: (value: string) => void;
+    const newResponse = new Promise<string>((resolve) => { resolveNew = resolve; });
+    const newInstall = newResponse.then((window) => {
+      if (focusRequestIsCurrent(
+        newGeneration,
+        newSettings,
+        generation,
+        currentSettings,
+      )) installed.push(window);
+    });
+    resolveNew("new 5m SMA window");
+    await newInstall;
+
+    expect(installed).toEqual(["new 5m SMA window"]);
   });
 });
 

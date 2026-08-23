@@ -1,7 +1,7 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import { ReplayChart } from "./Chart";
-import { canActShortcut, focusWithinLiveBounds, formatAdaptiveNumber, formatExecutionTime, formatMetricLabel, formatNumber, formatPrice, formatStatistic, historyCountLabel, isEditableKeyboardTarget, parsePositiveQuantity, replayProgress, stepSizeOptions, tradeFocusEnd, utcClock, utcDateTime, validateOrderTicket } from "./helpers";
+import { canActShortcut, focusRequestIsCurrent, focusSettingsSignature, focusWithinLiveBounds, formatAdaptiveNumber, formatExecutionTime, formatMetricLabel, formatNumber, formatPrice, formatStatistic, historyCountLabel, isEditableKeyboardTarget, parsePositiveQuantity, replayProgress, stepSizeOptions, tradeFocusEnd, utcClock, utcDateTime, validateOrderTicket } from "./helpers";
 import { TradeRow } from "./TradeRow";
 import { TradeReview } from "./TradeReview";
 import { useReplayStore } from "./store";
@@ -63,8 +63,8 @@ function ReplayWorkspaceContent({ replay }: { replay: ReplaySnapshot }) {
     window: ChartHistoryResponse | null;
     status: "live" | "loading" | "ready" | "error";
   } | null>(null);
-  // Monotonic token for focus fetches: only the newest focus request may
-  // install its window, and a stale failure never clears a newer selection.
+  // Monotonic token for focus fetches: only the newest request made for the
+  // current chart settings may install a window or visible failure.
   const focusGeneration = useRef(0);
 
   const metadata = symbols.find((item) => item.symbol === replay.symbol);
@@ -185,13 +185,25 @@ function ReplayWorkspaceContent({ replay }: { replay: ReplaySnapshot }) {
     await action(() => api.closeAll(replay.id));
   }
 
+  const currentFocusSettings = useMemo(
+    () => focusSettingsSignature(replay.visible_timeframe, replay.enabled_indicators),
+    [replay.enabled_indicators, replay.visible_timeframe],
+  );
   const replayRef = useRef(replay);
-  useEffect(() => { replayRef.current = replay; }, [replay]);
+  const focusSettingsRef = useRef(currentFocusSettings);
+  useLayoutEffect(() => {
+    // Commit the matching replay payload and signature before a delayed
+    // request can settle against newly rendered controls.
+    replayRef.current = replay;
+    focusSettingsRef.current = currentFocusSettings;
+  }, [currentFocusSettings, replay]);
+  const previousFocusSettings = useRef(currentFocusSettings);
 
   const handleFocus = useCallback(async (trade: Trade) => {
     // A trade inside the live window zooms the existing chart payload; an
     // older trade needs a bounded historical window fetched from the server.
     const current = replayRef.current;
+    const requestSettingsSignature = focusSettingsRef.current;
     const from = trade.entry_source_candle_time ?? trade.entry_time;
     const to = tradeFocusEnd(trade, current.fills);
     const generation = ++focusGeneration.current;
@@ -207,26 +219,44 @@ function ReplayWorkspaceContent({ replay }: { replay: ReplaySnapshot }) {
     setChartFocus({ trade, window: null, status: "loading" });
     try {
       const windowResponse = await api.getChartHistory(current.id, trade.id);
-      // A→B cannot install A: only the newest focus request applies.
-      if (generation !== focusGeneration.current) return;
+      // A→B cannot install A, and a settings response cannot install after
+      // its timeframe or enabled indicators have changed.
+      if (!focusRequestIsCurrent(
+        generation,
+        requestSettingsSignature,
+        focusGeneration.current,
+        focusSettingsRef.current,
+      )) return;
       setChartFocus((prev) => (prev && prev.trade.id === trade.id
         ? { trade, window: windowResponse, status: "ready" }
         : prev));
     } catch {
-      // A stale failure must never clear a newer selection; the current
-      // selection keeps the focus (visibly failed) instead of vanishing.
-      if (generation !== focusGeneration.current) return;
+      // A stale failure must never affect a newer selection or settings
+      // request; the current selection keeps a visible failure otherwise.
+      if (!focusRequestIsCurrent(
+        generation,
+        requestSettingsSignature,
+        focusGeneration.current,
+        focusSettingsRef.current,
+      )) return;
       setChartFocus((prev) => (prev && prev.trade.id === trade.id
         ? { trade, window: null, status: "error" }
         : prev));
     }
   }, []);
 
-  // A live-window focus tracks the trade inside the revealed payload; once
-  // the replay advances the trade out of the live bounds, refetch the same
-  // focus as a bounded server window so it never silently stops tracking.
-  useEffect(() => {
-    if (!chartFocus || chartFocus.window !== null || chartFocus.status !== "live") return;
+  // Reclassify the same focused trade whenever chart settings change. Live
+  // focus also follows the revealed payload and becomes a bounded request
+  // once advancing the replay moves its trade outside the live bars.
+  useLayoutEffect(() => {
+    const settingsChanged = previousFocusSettings.current !== currentFocusSettings;
+    previousFocusSettings.current = currentFocusSettings;
+    if (!chartFocus) return;
+    if (settingsChanged) {
+      void handleFocus(chartFocus.trade);
+      return;
+    }
+    if (chartFocus.window !== null || chartFocus.status !== "live") return;
     const current = replayRef.current;
     const from = chartFocus.trade.entry_source_candle_time ?? chartFocus.trade.entry_time;
     const to = tradeFocusEnd(chartFocus.trade, current.fills);
@@ -236,25 +266,8 @@ function ReplayWorkspaceContent({ replay }: { replay: ReplaySnapshot }) {
       current.displayed_bars[0]?.timestamp,
       current.displayed_bars.at(-1)?.timestamp,
     )) return;
-    const generation = ++focusGeneration.current;
-    setChartFocus((prev) => (prev && prev.trade.id === chartFocus.trade.id
-      ? { ...prev, status: "loading" }
-      : prev));
-    void api.getChartHistory(current.id, chartFocus.trade.id).then(
-      (windowResponse) => {
-        if (generation !== focusGeneration.current) return;
-        setChartFocus((prev) => (prev && prev.trade.id === chartFocus.trade.id
-          ? { trade: prev.trade, window: windowResponse, status: "ready" }
-          : prev));
-      },
-      () => {
-        if (generation !== focusGeneration.current) return;
-        setChartFocus((prev) => (prev && prev.trade.id === chartFocus.trade.id
-          ? { ...prev, status: "error" }
-          : prev));
-      },
-    );
-  }, [chartFocus, replay.displayed_bars]);
+    void handleFocus(chartFocus.trade);
+  }, [chartFocus, currentFocusSettings, handleFocus, replay.displayed_bars]);
 
   return (
     <main className="app workspace">
