@@ -92,7 +92,7 @@ def test_cost_configuration_propagates_to_fills_and_stats(client):
         "direction": "long", "quantity": 1, "stop_price": 1.0, "target_price": 2.0,
     })
     assert trade.status_code == 200, trade.text
-    entry = trade.json()["fills"][0]
+    entry = trade.json()["new_fills"][0]
     assert entry["reason"] == "entry"
     assert entry["market_price"] == pytest.approx(1.1013)
     assert entry["price"] == pytest.approx(1.1013 + 0.02 / 2 + 0.001)
@@ -118,11 +118,11 @@ def test_cost_configuration_propagates_to_fills_and_stats(client):
     state = client.get(f"/api/replay/sessions/{session_id}/state").json()
     assert state["stats"]["unrealized_pnl"] == pytest.approx((1.1015 - 1.1013) - 5.011)
 
-    closed = client.post(f"/api/trades/{trade.json()['trades'][0]['id']}/close", json={
+    closed = client.post(f"/api/trades/{trade.json()['trade_upserts'][0]['id']}/close", json={
         "session_id": session_id, "quantity": 1,
     })
     assert closed.status_code == 200, closed.text
-    exit_fill = closed.json()["fills"][1]
+    exit_fill = closed.json()["new_fills"][0]
     assert exit_fill["reason"] == "manual"
     assert exit_fill["market_price"] == pytest.approx(1.1015)
     assert exit_fill["price"] == pytest.approx(1.1015 - 0.02 / 2 - 0.001)
@@ -143,7 +143,7 @@ def test_zero_cost_session_keeps_legacy_defaults(client):
     trade = client.post(f"/api/replay/sessions/{session_id}/orders/market", json={
         "direction": "long", "quantity": 1, "stop_price": 1.0, "target_price": 2.0,
     }).json()
-    entry = trade["fills"][0]
+    entry = trade["new_fills"][0]
     assert entry["market_price"] == entry["price"]
     assert entry["commission"] == 0
     assert entry["spread_cost"] == 0
@@ -165,12 +165,21 @@ def test_completed_session_guards_step_and_new_orders(client):
 def test_active_close_all_is_a_manual_exit(client):
     session_id = create_session(client)["id"]
     client.post(f"/api/replay/sessions/{session_id}/step")
-    client.post(f"/api/replay/sessions/{session_id}/orders/market", json={
+    opened = client.post(f"/api/replay/sessions/{session_id}/orders/market", json={
         "direction": "long", "quantity": 1, "stop_price": 1.0, "target_price": 2.0,
     })
+    assert opened.status_code == 200, opened.text
+    trade_id = opened.json()["trade_upserts"][0]["id"]
     closed = client.post(f"/api/replay/sessions/{session_id}/close-all")
     assert closed.status_code == 200, closed.text
-    state = closed.json()
+    delta = closed.json()
+    # The update reports the open trade closing and the manual exit fill...
+    assert delta["trade_removals_from_open"] == [trade_id]
+    assert [t["id"] for t in delta["newly_closed_trades"]] == [trade_id]
+    assert all(fill["reason"] == "manual" for fill in delta["new_fills"])
+    assert delta["stats"]["unrealized_pnl"] == 0
+    # ...and the authoritative snapshot agrees.
+    state = client.get(f"/api/replay/sessions/{session_id}/state").json()
     assert all(trade["status"] == "closed" for trade in state["trades"])
     assert all(fill["reason"] == "manual" for fill in state["fills"] if fill["reason"] != "entry")
     assert state["stats"]["unrealized_pnl"] == 0
@@ -182,15 +191,19 @@ def test_completed_session_close_all_uses_session_end_reason(client):
     trade = client.post(f"/api/replay/sessions/{session_id}/orders/market", json={
         "direction": "long", "quantity": 1, "stop_price": 1.0, "target_price": 2.0,
     }).json()
-    trade_id = trade["trades"][0]["id"]
+    trade_id = trade["trade_upserts"][0]["id"]
     assert client.patch(f"/api/replay/sessions/{session_id}/settings", json={"advance_step_minutes": 10}).status_code == 200
     assert client.post(f"/api/replay/sessions/{session_id}/step").status_code == 200  # completes
     assert client.post(f"/api/replay/sessions/{session_id}/step").status_code == 400
     closed = client.post(f"/api/replay/sessions/{session_id}/close-all")
     assert closed.status_code == 200, closed.text
-    state = closed.json()
-    assert state["status"] == "completed"
-    assert all(trade["status"] == "closed" for trade in state["trades"])
+    delta = closed.json()
+    assert delta["status"] == "completed"
+    assert delta["new_fills"][-1]["reason"] == "session_end"
+    assert delta["new_fills"][-1]["trade_id"] == trade_id
+    assert [t["id"] for t in delta["newly_closed_trades"]] == [trade_id]
+    state = client.get(f"/api/replay/sessions/{session_id}/state").json()
+    assert all(t["status"] == "closed" for t in state["trades"])
     assert state["fills"][-1]["reason"] == "session_end"
     assert state["fills"][-1]["trade_id"] == trade_id
 
@@ -202,7 +215,7 @@ def test_manual_close_works_after_completion(client):
         "direction": "long", "quantity": 1, "stop_price": 1.0, "target_price": 2.0,
     })
     assert trade.status_code == 200, trade.text
-    trade_id = trade.json()["trades"][0]["id"]
+    trade_id = trade.json()["trade_upserts"][0]["id"]
     assert client.patch(f"/api/replay/sessions/{session_id}/settings", json={"advance_step_minutes": 10}).status_code == 200
     assert client.post(f"/api/replay/sessions/{session_id}/step").status_code == 200  # completes
     assert client.post(f"/api/replay/sessions/{session_id}/step").status_code == 400
@@ -210,7 +223,7 @@ def test_manual_close_works_after_completion(client):
         "session_id": session_id, "quantity": 1,
     })
     assert closed.status_code == 200, closed.text
-    assert closed.json()["fills"][-1]["reason"] == "manual"
+    assert closed.json()["new_fills"][0]["reason"] == "manual"
 
 
 def test_market_order_requires_a_causal_price(client):
@@ -332,7 +345,11 @@ def test_displayed_bars_stay_bounded_as_replay_advances(client, tmp_path):
         assert len(state["displayed_bars"]) <= 500
     assert state["status"] == "completed"
     assert len(state["displayed_bars"]) <= 500
-    assert state["displayed_bars"][-1]["timestamp"] == state["current_market_time"]
+    # The displayed candle's timestamp is its opening time; the market clock
+    # shows the reveal time (opening + 1m), exposed as current_candle_time vs
+    # current_market_time.
+    assert state["displayed_bars"][-1]["timestamp"] == state["current_candle_time"]
+    assert state["current_market_time"] > state["current_candle_time"]
 
 
 def test_session_replays_pinned_version_after_reimport(client, tmp_path):
@@ -340,7 +357,7 @@ def test_session_replays_pinned_version_after_reimport(client, tmp_path):
     for _ in range(4):
         assert client.post(f"/api/replay/sessions/{session_id}/step").status_code == 200
     state = client.get(f"/api/replay/sessions/{session_id}/state").json()
-    assert state["current_market_time"].endswith("17:03:00+00:00")
+    assert state["current_market_time"].endswith("17:04:00+00:00")
     pinned_version = state["data_version"]
     assert pinned_version
     # Re-import the same symbol with the 17:03 bar removed.
@@ -359,7 +376,7 @@ def test_session_replays_pinned_version_after_reimport(client, tmp_path):
     # The existing session keeps stepping the pinned version: next bar is 17:04
     # (a re-based session would skip to 17:05) and the tail still holds two bars.
     stepped = client.post(f"/api/replay/sessions/{session_id}/step").json()
-    assert stepped["current_market_time"].endswith("17:04:00+00:00")
+    assert stepped["current_market_time"].endswith("17:05:00+00:00")
     assert stepped["remaining_bars"] == 2
     # A fresh session pins the newly published version and skips the removed minute.
     fresh = create_session(client, start="2026-01-02T17:00:00Z", end="2026-01-02T17:06:00Z")
@@ -368,7 +385,7 @@ def test_session_replays_pinned_version_after_reimport(client, tmp_path):
     for _ in range(4):
         assert client.post(f"/api/replay/sessions/{fresh_id}/step").status_code == 200
     fresh_state = client.get(f"/api/replay/sessions/{fresh_id}/state").json()
-    assert fresh_state["current_market_time"].endswith("17:04:00+00:00")
+    assert fresh_state["current_market_time"].endswith("17:05:00+00:00")
 
 
 def test_extreme_numeric_inputs_are_rejected(client):
@@ -387,7 +404,7 @@ def test_extreme_numeric_inputs_are_rejected(client):
     trade = client.post(f"/api/replay/sessions/{session_id}/orders/market", json={
         "direction": "long", "quantity": 1, "stop_price": 1.0, "target_price": 2.0,
     }).json()
-    trade_id = trade["trades"][0]["id"]
+    trade_id = trade["trade_upserts"][0]["id"]
     for path in (f"/api/trades/{trade_id}/stop", f"/api/trades/{trade_id}/target"):
         response = client.put(path, content=f'{{"session_id": "{session_id}", "price": 1e309}}',
                               headers={"Content-Type": "application/json"})
@@ -418,7 +435,7 @@ def test_order_audit_commits_with_session_state(client):
     trade = client.post(f"/api/replay/sessions/{session_id}/orders/market", json={
         "direction": "long", "quantity": 1, "stop_price": 1.0, "target_price": 2.0,
     }).json()
-    trade_id = trade["trades"][0]["id"]
+    trade_id = trade["trade_upserts"][0]["id"]
     with repository.connect() as db:
         rows = db.execute(
             "SELECT order_type, payload_json FROM orders WHERE session_id=? ORDER BY created_at", (session_id,)
@@ -476,4 +493,5 @@ def test_weekend_gap_keeps_full_context_window(client, tmp_path):
     ]
     # Indicator warmup stays causal across the gap: SMA over the Friday context only.
     stepped = client.post(f"/api/replay/sessions/{session_id}/step").json()
-    assert stepped["current_market_time"] == "2026-01-05T00:00:00+00:00"
+    assert stepped["current_market_time"] == "2026-01-05T00:01:00+00:00"
+    assert stepped["current_candle_time"] == "2026-01-05T00:00:00+00:00"

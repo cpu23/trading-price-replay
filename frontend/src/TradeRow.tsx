@@ -1,14 +1,14 @@
 import { useEffect, useState } from "react";
 import { api } from "./api";
-import { formatAdaptiveNumber, formatNumber, formatPrice } from "./helpers";
-import type { ReplayState, Trade } from "./types";
+import { formatAdaptiveNumber, formatNumber, formatPrice, utcDateTime } from "./helpers";
+import type { ReplaySnapshot, ReplayUpdate, Trade } from "./types";
 
 type TradeRowProps = {
   trade: Trade;
-  replay: ReplayState;
+  replay: ReplaySnapshot;
   precision: number;
   busy: boolean;
-  action: (call: () => Promise<ReplayState>) => Promise<void>;
+  action: (call: () => Promise<ReplayUpdate>) => Promise<void>;
 };
 
 export function TradeRow({ trade, replay, precision, busy, action }: TradeRowProps) {
@@ -32,7 +32,7 @@ export function TradeRow({ trade, replay, precision, busy, action }: TradeRowPro
       return;
     }
     setValidationError("");
-    await action(() => api.post<ReplayState>(`/api/trades/${trade.id}/close`, {
+    await action(() => api.closeTrade(trade.id, {
       session_id: replay.id,
       quantity,
     }));
@@ -55,10 +55,15 @@ export function TradeRow({ trade, replay, precision, busy, action }: TradeRowPro
       }
     }
     setValidationError("");
-    await action(() => api.put<ReplayState>(`/api/trades/${trade.id}/${kind}`, {
-      session_id: replay.id,
-      price,
-    }));
+    await action(() => kind === "stop"
+      ? api.updateTradeStop(trade.id, {
+        session_id: replay.id,
+        price,
+      })
+      : api.updateTradeTarget(trade.id, {
+        session_id: replay.id,
+        price,
+      }));
   }
 
   return (
@@ -75,7 +80,7 @@ export function TradeRow({ trade, replay, precision, busy, action }: TradeRowPro
           </div>
           <div>
             <dt>Opened</dt>
-            <dd><time dateTime={trade.entry_time}>{new Date(trade.entry_time).toLocaleString()}</time></dd>
+            <dd><time dateTime={trade.entry_time}>{utcDateTime(trade.entry_time)} UTC</time></dd>
           </div>
           <div>
             <dt>Realized net</dt>

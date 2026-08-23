@@ -2,13 +2,17 @@ import { describe, expect, it } from "vitest";
 import { apiErrorDetail } from "../src/api";
 import {
   formatAdaptiveNumber,
+  formatDuration,
+  formatExecutionTime,
   formatMetricLabel,
   formatStatistic,
   fromDateTimeLocalValue,
   historyCountLabel,
   isTimestampWithinRange,
+  parseTags,
   replayProgress,
   toDateTimeLocalValue,
+  utcDateTime,
   validateOrderTicket,
   validateReplayRange,
 } from "../src/helpers";
@@ -107,8 +111,14 @@ describe("statistic formatting", () => {
     expect(formatStatistic("long_pnl", 4.125, "USD")).toBe("4.13 USD");
     expect(formatStatistic("total_r", -0.5, "USD")).toBe("-0.50 R");
     expect(formatStatistic("profit_factor", 1.6962, "USD")).toBe("1.70");
+    expect(formatStatistic("median_r", 0.25, "USD")).toBe("0.25 R");
+    expect(formatStatistic("average_win_r", 1.2, "USD")).toBe("1.20 R");
+    expect(formatStatistic("average_losing_r", -0.4, "USD")).toBe("-0.40 R");
+    expect(formatStatistic("average_holding_seconds", 3725, "USD")).toBe("1h 2m 5s");
     expect(formatMetricLabel("long_pnl")).toBe("Long P&L");
     expect(formatMetricLabel("average_r")).toBe("Average R");
+    expect(formatMetricLabel("average_holding_seconds")).toBe("Average holding");
+    expect(formatMetricLabel("median_r")).toBe("Median R");
   });
 });
 
@@ -152,5 +162,90 @@ describe("API error detail", () => {
   it("preserves backend detail strings", () => {
     expect(apiErrorDetail({ detail: "session is completed" }, "Request failed"))
       .toBe("session is completed");
+  });
+});
+
+describe("execution time precision formatting", () => {
+  it("formats exact fills with the full timestamp", () => {
+    expect(formatExecutionTime({
+      timestamp: "2026-01-02T17:01:00Z",
+      time_precision: "exact",
+      execution_window_start: "2026-01-02T17:01:00Z",
+      execution_window_end: "2026-01-02T17:01:00Z",
+    })).toBe("2026-01-02 17:01:00 UTC");
+  });
+
+  it("formats bar_interval fills as the known candle window", () => {
+    expect(formatExecutionTime({
+      timestamp: "2026-01-02T17:00:00Z",
+      time_precision: "bar_interval",
+      execution_window_start: "2026-01-02T17:00:00Z",
+      execution_window_end: "2026-01-02T17:01:00Z",
+    })).toBe("17:00-17:01 UTC");
+  });
+
+  it("includes dates when the interval crosses midnight", () => {
+    expect(formatExecutionTime({
+      timestamp: "2026-01-02T23:59:00Z",
+      time_precision: "bar_interval",
+      execution_window_start: "2026-01-02T23:59:00Z",
+      execution_window_end: "2026-01-03T00:00:00Z",
+    })).toBe("2026-01-02 23:59-2026-01-03 00:00 UTC");
+  });
+
+  it("shows legacy fills' recorded timestamp without claiming precision", () => {
+    expect(formatExecutionTime({
+      timestamp: "2026-01-02T17:00:00Z",
+      time_precision: "legacy",
+    })).toBe("2026-01-02 17:00:00 UTC");
+  });
+
+  it("falls back to the timestamp when an interval window is missing", () => {
+    expect(formatExecutionTime({
+      timestamp: "2026-01-02T17:00:00Z",
+      time_precision: "bar_interval",
+      execution_window_start: "2026-01-02T17:00:00Z",
+    })).toBe("2026-01-02 17:00:00 UTC");
+  });
+});
+
+describe("utcDateTime", () => {
+  it("formats ISO timestamps in UTC regardless of the local timezone", () => {
+    expect(utcDateTime("2026-01-02T17:01:05Z")).toBe("2026-01-02 17:01:05");
+  });
+});
+
+describe("tag parsing", () => {
+  it("splits on commas and whitespace, trims, and drops empty parts", () => {
+    expect(parseTags("  momentum,  gap up ,  ")).toEqual(["momentum", "gap", "up"]);
+  });
+
+  it("de-duplicates case-insensitively while preserving first-seen order", () => {
+    expect(parseTags("Momentum momentum MOMENTUM scalping")).toEqual(["Momentum", "scalping"]);
+  });
+
+  it("caps at 20 tags", () => {
+    const tags = parseTags(Array.from({ length: 25 }, (_, index) => `tag${index}`).join(" "));
+    expect(tags).toHaveLength(20);
+    expect(tags[0]).toBe("tag0");
+  });
+
+  it("returns an empty list for blank input", () => {
+    expect(parseTags("   ,  ")).toEqual([]);
+  });
+});
+
+describe("duration formatting", () => {
+  it("renders days, hours, minutes, and seconds compactly", () => {
+    expect(formatDuration(90061)).toBe("1d 1h 1m 1s");
+    expect(formatDuration(3725)).toBe("1h 2m 5s");
+    expect(formatDuration(95)).toBe("1m 35s");
+    expect(formatDuration(12)).toBe("12s");
+  });
+
+  it("handles zero and invalid input", () => {
+    expect(formatDuration(0)).toBe("0s");
+    expect(formatDuration(Number.NaN)).toBe("—");
+    expect(formatDuration(-5)).toBe("—");
   });
 });

@@ -126,6 +126,15 @@ const INTEGER_STATISTICS: Record<string, true> = {
   trades_completed: true,
 };
 const CURRENCY_STATISTICS: Record<string, true> = {
+  balance: true,
+  equity: true,
+  net_pnl: true,
+  gross_pnl: true,
+  unrealized_pnl: true,
+  trading_costs: true,
+  commission_paid: true,
+  spread_cost: true,
+  slippage_cost: true,
   average_win: true,
   average_loss: true,
   long_pnl: true,
@@ -135,9 +144,41 @@ const CURRENCY_STATISTICS: Record<string, true> = {
 const R_STATISTICS: Record<string, true> = {
   total_r: true,
   average_r: true,
+  median_r: true,
+  average_win_r: true,
+  average_losing_r: true,
+};
+
+const METRIC_LABELS: Record<string, string> = {
+  balance: "Balance",
+  equity: "Equity",
+  net_pnl: "Net P&L",
+  gross_pnl: "Gross P&L",
+  unrealized_pnl: "Unrealized P&L",
+  trading_costs: "Trading costs",
+  commission_paid: "Commission",
+  spread_cost: "Spread cost",
+  slippage_cost: "Slippage cost",
+  trades_opened: "Trades opened",
+  trades_completed: "Trades completed",
+  win_rate: "Win rate",
+  profit_factor: "Profit factor",
+  total_r: "Total R",
+  average_r: "Average R",
+  median_r: "Median R",
+  average_win_r: "Average win R",
+  average_losing_r: "Average losing R",
+  average_holding_seconds: "Average holding",
+  average_win: "Average win",
+  average_loss: "Average loss",
+  long_pnl: "Long P&L",
+  short_pnl: "Short P&L",
+  max_drawdown: "Max drawdown",
 };
 
 export function formatMetricLabel(name: string): string {
+  const known = METRIC_LABELS[name];
+  if (known) return known;
   return name
     .split("_")
     .map((word, index) => {
@@ -148,10 +189,95 @@ export function formatMetricLabel(name: string): string {
     .join(" ");
 }
 
+export function formatDuration(totalSeconds: number): string {
+  if (!Number.isFinite(totalSeconds) || totalSeconds < 0) return "—";
+  const seconds = Math.round(totalSeconds);
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const secs = seconds % 60;
+  const parts: string[] = [];
+  if (days) parts.push(`${days}d`);
+  if (hours) parts.push(`${hours}h`);
+  if (minutes) parts.push(`${minutes}m`);
+  if (secs || parts.length === 0) parts.push(`${secs}s`);
+  return parts.join(" ");
+}
+
 export function formatStatistic(name: string, value: number, currency: string): string {
   if (INTEGER_STATISTICS[name]) return formatNumber(value, 0);
   if (name === "win_rate") return `${formatNumber(value)}%`;
+  if (name === "average_holding_seconds") return formatDuration(value);
   if (CURRENCY_STATISTICS[name]) return `${formatNumber(value)} ${currency}`;
   if (R_STATISTICS[name]) return `${formatNumber(value)} R`;
   return formatNumber(value);
+}
+
+export type ExecutionPrecision = "exact" | "bar_interval" | "legacy";
+
+export type ExecutionTimestamp = {
+  timestamp: string;
+  time_precision?: ExecutionPrecision | null;
+  execution_window_start?: string | null;
+  execution_window_end?: string | null;
+};
+
+const pad2 = (value: number): string => String(value).padStart(2, "0");
+
+/** "YYYY-MM-DD HH:MM:SS" in UTC, parsed from an ISO timestamp. */
+export function utcDateTime(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  return `${date.getUTCFullYear()}-${pad2(date.getUTCMonth() + 1)}-${pad2(date.getUTCDate())} `
+    + `${pad2(date.getUTCHours())}:${pad2(date.getUTCMinutes())}:${pad2(date.getUTCSeconds())}`;
+}
+
+/** "HH:MM" in UTC, parsed from an ISO timestamp. */
+export const utcClock = (iso: string): string => {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  return `${pad2(date.getUTCHours())}:${pad2(date.getUTCMinutes())}`;
+};
+
+const utcDate = (date: Date): string =>
+  `${date.getUTCFullYear()}-${pad2(date.getUTCMonth() + 1)}-${pad2(date.getUTCDate())}`;
+
+/**
+ * Format an execution timestamp by its time precision:
+ * - exact: the true execution time, "2026-01-02 17:01:00 UTC";
+ * - bar_interval: only the M1 candle interval is known, "17:00-17:01 UTC"
+ *   (dates included when the interval crosses midnight);
+ * - legacy / unknown: the recorded timestamp, without claiming precision.
+ */
+export function formatExecutionTime(fill: ExecutionTimestamp): string {
+  if (fill.time_precision === "bar_interval" && fill.execution_window_start && fill.execution_window_end) {
+    const start = new Date(fill.execution_window_start);
+    const end = new Date(fill.execution_window_end);
+    if (!Number.isNaN(start.getTime()) && !Number.isNaN(end.getTime())) {
+      if (Math.floor(start.getTime() / 86400000) === Math.floor(end.getTime() / 86400000)) {
+        return `${utcClock(fill.execution_window_start)}-${utcClock(fill.execution_window_end)} UTC`;
+      }
+      return `${utcDate(start)} ${utcClock(fill.execution_window_start)}-${utcDate(end)} ${utcClock(fill.execution_window_end)} UTC`;
+    }
+  }
+  return `${utcDateTime(fill.timestamp)} UTC`;
+}
+
+/**
+ * Parse a raw tag input: split on commas/whitespace, trim, drop empties,
+ * de-duplicate case-insensitively while preserving first-seen order and case,
+ * and cap at 20 tags (the backend enforces the same bound).
+ */
+export function parseTags(raw: string): string[] {
+  const seen = new Set<string>();
+  const tags: string[] = [];
+  for (const part of raw.split(/[\s,]+/)) {
+    const tag = part.trim();
+    if (!tag) continue;
+    const key = tag.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    tags.push(tag);
+  }
+  return tags.slice(0, 20);
 }

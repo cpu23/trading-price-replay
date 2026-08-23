@@ -15,13 +15,24 @@ import {
   type UTCTimestamp,
 } from "lightweight-charts";
 import { formatAdaptiveNumber, isTimestampWithinRange } from "./helpers";
-import type { ReplayState } from "./types";
+import type { ChartHistoryResponse, ReplayState } from "./types";
 
 function chartTime(timestamp: string): UTCTimestamp {
   return Math.floor(new Date(timestamp).getTime() / 1000) as UTCTimestamp;
 }
 
-export function ReplayChart({ replay, precision }: { replay: ReplayState; precision: number }) {
+/** Zoom target for a closed trade. `window`, when present, is a bounded
+ * historical chart window fetched for a trade that is no longer in the live
+ * replay context; the chart renders that window instead of the live payload.
+ */
+type ChartFocus = { from: string; to: string; window?: ChartHistoryResponse };
+
+export function ReplayChart({ replay, precision, focus, onClearFocus }: {
+  replay: ReplayState;
+  precision: number;
+  focus: ChartFocus | null;
+  onClearFocus: () => void;
+}) {
   const container = useRef<HTMLDivElement>(null);
   const chart = useRef<IChartApi | null>(null);
   const candles = useRef<ISeriesApi<"Candlestick"> | null>(null);
@@ -29,6 +40,7 @@ export function ReplayChart({ replay, precision }: { replay: ReplayState; precis
   const markers = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const priceLines = useRef<IPriceLine[]>([]);
   const previousDataLength = useRef(0);
+  const wasFocused = useRef(false);
 
   useEffect(() => {
     if (!container.current) return;
@@ -112,25 +124,38 @@ export function ReplayChart({ replay, precision }: { replay: ReplayState; precis
     const movingAverage = smaLine.current;
     if (!instance || !candleSeries || !movingAverage) return;
 
+    // The chart renders either the live replay payload, or — while a
+    // historical window is focused — that window's bounded payload. The
+    // chart instance is never recreated.
+    const windowData = focus?.window;
+    const bars = windowData ? windowData.displayed_bars : replay.displayed_bars;
+    const fills = windowData ? windowData.fills : replay.fills;
+    const trades = windowData ? [windowData.trade] : replay.trades;
+    const sma = windowData?.indicators?.sma_close_35 ?? replay.indicators?.sma_close_35 ?? [];
+
     const logicalRange = instance.timeScale().getVisibleLogicalRange();
     const timeRange = instance.timeScale().getVisibleRange();
     const wasAtLatest = !logicalRange || logicalRange.to >= previousDataLength.current - 1.5;
-    const candleData = replay.displayed_bars.map((bar) => ({
+    const candleData = bars.map((bar) => ({
       time: chartTime(bar.timestamp),
       open: bar.open,
       high: bar.high,
       low: bar.low,
       close: bar.close,
     }));
-    const firstTimestamp = replay.displayed_bars[0]?.timestamp;
-    const lastTimestamp = replay.displayed_bars[replay.displayed_bars.length - 1]?.timestamp;
+    const firstTimestamp = bars[0]?.timestamp;
+    const lastTimestamp = bars[bars.length - 1]?.timestamp;
     candleSeries.setData(candleData);
 
+    // Markers anchor to the source candle, not the execution timestamp: a
+    // market entry executes at the source candle's reveal (one minute after
+    // that candle opens), while the chart keys candles by their open.
     const markerData: SeriesMarker<Time>[] = [
-      ...replay.trades
-        .filter((trade) => isTimestampWithinRange(trade.entry_time, firstTimestamp, lastTimestamp))
+      ...trades
+        .filter((trade) => isTimestampWithinRange(
+          trade.entry_source_candle_time ?? trade.entry_time, firstTimestamp, lastTimestamp))
         .map((trade): SeriesMarker<Time> => ({
-          time: chartTime(trade.entry_time),
+          time: chartTime(trade.entry_source_candle_time ?? trade.entry_time),
           position: trade.direction === "long" ? "belowBar" : "aboveBar",
           shape: trade.direction === "long" ? "arrowUp" : "arrowDown",
           color: getComputedStyle(document.documentElement).getPropertyValue(
@@ -138,11 +163,12 @@ export function ReplayChart({ replay, precision }: { replay: ReplayState; precis
           ).trim(),
           text: `${trade.direction === "long" ? "LONG" : "SHORT"} ${formatAdaptiveNumber(trade.initial_quantity)}`,
         })),
-      ...replay.fills
+      ...fills
         .filter((fill) => fill.reason !== "entry"
-          && isTimestampWithinRange(fill.timestamp, firstTimestamp, lastTimestamp))
+          && isTimestampWithinRange(
+            fill.source_candle_time ?? fill.timestamp, firstTimestamp, lastTimestamp))
         .map((fill): SeriesMarker<Time> => ({
-          time: chartTime(fill.timestamp),
+          time: chartTime(fill.source_candle_time ?? fill.timestamp),
           position: "inBar",
           shape: "circle",
           color: getComputedStyle(document.documentElement).getPropertyValue(
@@ -153,12 +179,11 @@ export function ReplayChart({ replay, precision }: { replay: ReplayState; precis
     ].sort((left, right) => Number(left.time) - Number(right.time));
     markers.current?.setMarkers(markerData);
 
-    const sma = replay.indicators.sma_close_35 ?? [];
     movingAverage.setData(sma.map((point) => ({ time: chartTime(point.time), value: point.value })));
 
     for (const line of priceLines.current) candleSeries.removePriceLine(line);
     const styles = getComputedStyle(document.documentElement);
-    priceLines.current = replay.trades
+    priceLines.current = trades
       .filter((trade) => trade.status === "open")
       .flatMap((trade) => {
         const lines: IPriceLine[] = [];
@@ -193,14 +218,55 @@ export function ReplayChart({ replay, precision }: { replay: ReplayState; precis
       instance.timeScale().setVisibleRange(timeRange);
     }
     previousDataLength.current = candleData.length;
-  }, [replay.displayed_bars, replay.fills, replay.indicators.sma_close_35, replay.trades]);
+  }, [replay.displayed_bars, replay.fills, replay.indicators?.sma_close_35, replay.trades, focus]);
+
+  // Chart focus: zoom to a closed trade's entry-to-exit region without
+  // recreating the chart instance. Clearing focus returns the view to the
+  // latest revealed area (only if a focus was previously active).
+  useEffect(() => {
+    const instance = chart.current;
+    const candleSeries = candles.current;
+    if (!instance || !candleSeries) return;
+    if (focus) {
+      wasFocused.current = true;
+      const from = chartTime(focus.from);
+      const to = chartTime(focus.to);
+      const span = Math.max(to - from, 60);
+      const margin = Math.max(span * 0.1, 300);
+      instance.timeScale().setVisibleRange({
+        from: (from - margin) as UTCTimestamp,
+        to: (to + margin) as UTCTimestamp,
+      });
+      return;
+    }
+    if (!wasFocused.current) return;
+    wasFocused.current = false;
+    const data = candleSeries.data();
+    if (data.length >= 10) {
+      instance.timeScale().setVisibleLogicalRange({ from: data.length - 60, to: data.length + 5 });
+    } else {
+      instance.timeScale().fitContent();
+    }
+  }, [focus]);
 
   return (
-    <div
-      className="chart"
-      ref={container}
-      role="img"
-      aria-label={`${replay.symbol} ${replay.visible_timeframe} candlestick chart with trade markers`}
-    />
+    <div className="chart-wrap">
+      <div
+        className="chart"
+        ref={container}
+        role="img"
+        aria-label={`${replay.symbol} ${replay.visible_timeframe} candlestick chart with trade markers`}
+      />
+      {focus && (
+        <button
+          className="chart-focus-reset"
+          type="button"
+          onClick={onClearFocus}
+          aria-label="Return chart to the latest replay area"
+        >
+          Back to latest
+        </button>
+      )}
+    </div>
   );
 }

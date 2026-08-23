@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import { ReplayChart } from "./Chart";
-import { formatAdaptiveNumber, formatMetricLabel, formatNumber, formatPrice, formatStatistic, historyCountLabel, replayProgress, validateOrderTicket } from "./helpers";
+import { formatAdaptiveNumber, formatExecutionTime, formatMetricLabel, formatNumber, formatPrice, formatStatistic, historyCountLabel, replayProgress, utcClock, utcDateTime, validateOrderTicket } from "./helpers";
 import { TradeRow } from "./TradeRow";
+import { TradeReview } from "./TradeReview";
 import { useReplayStore } from "./store";
-import type { ReplayState, Timeframe, TradeDirection } from "./types";
+import type { ChartHistoryResponse, Fill, ReplaySnapshot, ReplayStats, Timeframe, Trade, TradeDirection } from "./types";
 
 const TIMEFRAMES: Timeframe[] = ["1m", "5m", "15m", "1h", "4h", "1d"];
 const STEP_SIZES = [1, 2, 3, 5, 10, 15];
@@ -14,7 +15,7 @@ const PLAYBACK_SPEEDS = [
   { label: "2×", delay: 500 },
   { label: "4×", delay: 250 },
 ];
-const PRIMARY_STATS = [
+const PRIMARY_STATS: (keyof ReplayStats)[] = [
   "balance",
   "equity",
   "net_pnl",
@@ -31,7 +32,7 @@ export function ReplayWorkspace() {
   return replay ? <ReplayWorkspaceContent replay={replay} /> : null;
 }
 
-function ReplayWorkspaceContent({ replay }: { replay: ReplayState }) {
+function ReplayWorkspaceContent({ replay }: { replay: ReplaySnapshot }) {
   const symbols = useReplayStore((state) => state.symbols);
   const action = useReplayStore((state) => state.action);
   const leave = useReplayStore((state) => state.leave);
@@ -40,6 +41,11 @@ function ReplayWorkspaceContent({ replay }: { replay: ReplayState }) {
   const busy = useReplayStore((state) => state.busy);
   const error = useReplayStore((state) => state.error);
   const clearError = useReplayStore((state) => state.clearError);
+  const olderClosedTrades = useReplayStore((state) => state.olderClosedTrades);
+  const olderFills = useReplayStore((state) => state.olderFills);
+  const historyLoading = useReplayStore((state) => state.historyLoading);
+  const loadOlderTrades = useReplayStore((state) => state.loadOlderTrades);
+  const loadOlderFills = useReplayStore((state) => state.loadOlderFills);
 
   const [quantity, setQuantity] = useState(1);
   const [stop, setStop] = useState("");
@@ -47,6 +53,7 @@ function ReplayWorkspaceContent({ replay }: { replay: ReplayState }) {
   const [ticketError, setTicketError] = useState("");
   const [playbackDelay, setPlaybackDelay] = useState(1000);
   const [confirmCloseAll, setConfirmCloseAll] = useState(false);
+  const [chartFocus, setChartFocus] = useState<{ trade: Trade; window: ChartHistoryResponse | null } | null>(null);
 
   const metadata = symbols.find((item) => item.symbol === replay.symbol);
   // Formatting follows the session's pinned snapshot; legacy sessions fall back
@@ -59,8 +66,21 @@ function ReplayWorkspaceContent({ replay }: { replay: ReplayState }) {
   const progress = replayProgress(replay.current_index, replay.remaining_bars);
   const canEnter = replay.status !== "completed" && replay.current_index >= 0 && replay.current_price !== null;
 
+  // Combined newest-first display lists. The store's live arrays keep stable
+  // references while no trade/fill delta arrives, so the memoized lists (and
+  // the memoized ledger bodies below) skip re-rendering on steps that only
+  // advance the clock — loading many older pages never slows down stepping.
+  const displayClosedTrades = useMemo(
+    () => [...replay.trades].reverse().filter((trade) => trade.status === "closed").concat(olderClosedTrades),
+    [replay.trades, olderClosedTrades]);
+  const displayFills = useMemo(
+    () => [...replay.fills].reverse().concat(olderFills),
+    [replay.fills, olderFills]);
+  const canLoadOlderTrades = replay.closed_trades_total > closedTrades.length + olderClosedTrades.length;
+  const canLoadOlderFills = replay.fills_total > replay.fills.length + olderFills.length;
+
   const step = useCallback(async () => {
-    await action(() => api.post<ReplayState>(`/api/replay/sessions/${replay.id}/step`));
+    await action(() => api.stepSession(replay.id));
   }, [action, replay.id]);
 
   const placeOrder = useCallback(async (direction: TradeDirection) => {
@@ -81,7 +101,7 @@ function ReplayWorkspaceContent({ replay }: { replay: ReplayState }) {
       return;
     }
     setTicketError("");
-    await action(() => api.post<ReplayState>(`/api/replay/sessions/${replay.id}/orders/market`, {
+    await action(() => api.placeMarketOrder(replay.id, {
       direction,
       quantity,
       stop_price: stop.trim() ? Number(stop) : null,
@@ -132,15 +152,38 @@ function ReplayWorkspaceContent({ replay }: { replay: ReplayState }) {
       .filter((name) => typeof replay.stats[name] === "number")
       .map((name) => [name, replay.stats[name]] as const);
     const secondary = Object.entries(replay.stats)
-      .filter(([name]) => !PRIMARY_STATS.includes(name))
+      .filter(([name]) => !PRIMARY_STATS.includes(name as keyof ReplayStats))
       .sort(([left], [right]) => left.localeCompare(right));
     return { primary, secondary };
   }, [replay.stats]);
 
   async function closeAll() {
     setConfirmCloseAll(false);
-    await action(() => api.post<ReplayState>(`/api/replay/sessions/${replay.id}/close-all`));
+    await action(() => api.closeAll(replay.id));
   }
+
+  const replayRef = useRef(replay);
+  useEffect(() => { replayRef.current = replay; }, [replay]);
+
+  const handleFocus = useCallback(async (trade: Trade) => {
+    // A trade inside the live window zooms the existing chart payload; an
+    // older trade needs a bounded historical window fetched from the server.
+    const current = replayRef.current;
+    const first = current.displayed_bars[0]?.timestamp;
+    const last = current.displayed_bars.at(-1)?.timestamp;
+    const from = trade.entry_source_candle_time ?? trade.entry_time;
+    const to = trade.exit_time ?? from;
+    setChartFocus({ trade, window: null });
+    if (first !== undefined && last !== undefined && from >= first && to <= last) return;
+    try {
+      const windowResponse = await api.getChartHistory(current.id, trade.id);
+      setChartFocus((prev) => (prev && prev.trade.id === trade.id
+        ? { trade, window: windowResponse }
+        : prev));
+    } catch {
+      setChartFocus(null);
+    }
+  }, []);
 
   return (
     <main className="app workspace">
@@ -159,9 +202,12 @@ function ReplayWorkspaceContent({ replay }: { replay: ReplayState }) {
           <span>Market time (UTC)</span>
           <strong>
             {replay.current_market_time
-              ? `${new Date(replay.current_market_time).toLocaleString(undefined, { timeZone: "UTC" })} UTC`
+              ? `${utcDateTime(replay.current_market_time)} UTC`
               : "No candle revealed"}
           </strong>
+          {replay.current_market_time && replay.current_candle_time && (
+            <span className="market-clock-candle">M1 candle {utcClock(replay.current_candle_time)} UTC opened</span>
+          )}
           <span>{replay.remaining_bars.toLocaleString()} bars remaining</span>
         </div>
         <button className="button-quiet leave-button" type="button" onClick={leave}>Leave replay</button>
@@ -180,7 +226,7 @@ function ReplayWorkspaceContent({ replay }: { replay: ReplayState }) {
               className={timeframe === replay.visible_timeframe ? "active" : ""}
               aria-pressed={timeframe === replay.visible_timeframe}
               disabled={busy}
-              onClick={() => void action(() => api.patch<ReplayState>(`/api/replay/sessions/${replay.id}/settings`, { visible_timeframe: timeframe }))}
+              onClick={() => void action(() => api.updateSettings(replay.id, { visible_timeframe: timeframe }))}
             >
               {timeframe}
             </button>
@@ -192,7 +238,7 @@ function ReplayWorkspaceContent({ replay }: { replay: ReplayState }) {
             id="step-size"
             value={replay.advance_step_minutes}
             disabled={busy || replay.status === "completed"}
-            onChange={(event) => void action(() => api.patch<ReplayState>(`/api/replay/sessions/${replay.id}/settings`, { advance_step_minutes: Number(event.target.value) }))}
+            onChange={(event) => void action(() => api.updateSettings(replay.id, { advance_step_minutes: Number(event.target.value) }))}
           >
             {STEP_SIZES.map((minutes) => <option key={minutes} value={minutes}>{minutes} min</option>)}
           </select>
@@ -232,7 +278,16 @@ function ReplayWorkspaceContent({ replay }: { replay: ReplayState }) {
         </div>
       )}
 
-      <ReplayChart replay={replay} precision={precision} />
+      <ReplayChart
+        replay={replay}
+        precision={precision}
+        focus={chartFocus ? {
+          from: chartFocus.trade.entry_source_candle_time ?? chartFocus.trade.entry_time,
+          to: chartFocus.trade.exit_time ?? chartFocus.trade.entry_source_candle_time ?? chartFocus.trade.entry_time,
+          window: chartFocus.window || undefined,
+        } : null}
+        onClearFocus={() => setChartFocus(null)}
+      />
 
       <section className="cost-strip" aria-label="Execution configuration">
         <div><span>Initial balance</span><strong>{formatNumber(replay.initial_balance)} {replay.account_currency}</strong></div>
@@ -316,7 +371,7 @@ function ReplayWorkspaceContent({ replay }: { replay: ReplayState }) {
               type="checkbox"
               checked={replay.enabled_indicators.includes("sma_close_35")}
               disabled={busy}
-              onChange={() => void action(() => api.post<ReplayState>(`/api/replay/sessions/${replay.id}/indicators/sma_close_35/toggle`))}
+              onChange={() => void action(() => api.toggleIndicator(replay.id, "sma_close_35"))}
             />
             <span><strong>SMA 35 close</strong><small>Causal moving average on the selected timeframe</small></span>
           </label>
@@ -359,32 +414,21 @@ function ReplayWorkspaceContent({ replay }: { replay: ReplayState }) {
               <p className="section-kicker">AUDIT</p>
               <h2 id="fills-heading">Fill ledger</h2>
             </div>
-            <span className="panel-note">{historyCountLabel(replay.fills_total, replay.fills.length, "fills")}</span>
+            <span className="panel-note">{historyCountLabel(replay.fills_total, displayFills.length, "fills")}</span>
           </div>
-          {replay.fills.length === 0 ? (
+          {displayFills.length === 0 ? (
             <div className="empty-state compact"><strong>No fills yet</strong><span>Entries, partial closes, stops, and targets appear here.</span></div>
           ) : (
-            <div className="table-scroll">
-              <table>
-                <thead><tr><th>Time (UTC)</th><th>Reason</th><th>Qty</th><th>Market</th><th>Fill</th><th>Gross</th><th>Commission</th><th>Spread</th><th>Slippage</th><th>Net</th></tr></thead>
-                <tbody>
-                  {replay.fills.slice().reverse().map((fill) => (
-                    <tr key={fill.id}>
-                      <td><time dateTime={fill.timestamp}>{new Date(fill.timestamp).toLocaleString(undefined, { timeZone: "UTC" })}</time></td>
-                      <td><span className="reason-chip">{fill.reason.replaceAll("_", " ")}</span></td>
-                      <td>{formatAdaptiveNumber(fill.quantity)}</td>
-                      <td>{formatPrice(fill.market_price, precision)}</td>
-                      <td>{formatPrice(fill.price, precision)}</td>
-                      <td>{formatNumber(fill.gross_pnl)}</td>
-                      <td>{formatAdaptiveNumber(fill.commission)}</td>
-                      <td>{formatNumber(fill.spread_cost)}</td>
-                      <td>{formatNumber(fill.slippage_cost)}</td>
-                      <td className={fill.pnl >= 0 ? "positive" : "negative"}>{formatNumber(fill.pnl)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <>
+              <FillLedgerBody fills={displayFills} precision={precision} />
+              {canLoadOlderFills && (
+                <div className="load-older">
+                  <button type="button" onClick={() => void loadOlderFills()} disabled={historyLoading}>
+                    {historyLoading ? "Loading older fills…" : "Load older fills"}
+                  </button>
+                </div>
+              )}
+            </>
           )}
         </section>
 
@@ -394,30 +438,66 @@ function ReplayWorkspaceContent({ replay }: { replay: ReplayState }) {
               <p className="section-kicker">HISTORY</p>
               <h2 id="closed-heading">Closed trades</h2>
             </div>
-            <span className="panel-note">{historyCountLabel(replay.closed_trades_total, closedTrades.length, "closed")}</span>
+            <span className="panel-note">{historyCountLabel(replay.closed_trades_total, displayClosedTrades.length, "closed")}</span>
           </div>
-          {closedTrades.length === 0 ? (
+          {displayClosedTrades.length === 0 ? (
             <div className="empty-state compact"><strong>No closed trades</strong><span>Completed positions will remain available for review.</span></div>
           ) : (
-            <div className="table-scroll">
-              <table>
-                <thead><tr><th>Direction</th><th>Quantity</th><th>Entry market</th><th>Entry fill</th><th>Realized net</th></tr></thead>
-                <tbody>
-                  {closedTrades.slice().reverse().map((trade) => (
-                    <tr key={trade.id}>
-                      <td><span className={`direction-badge direction-${trade.direction}`}>{trade.direction}</span></td>
-                      <td>{formatAdaptiveNumber(trade.initial_quantity)}</td>
-                      <td>{formatPrice(trade.entry_market_price, precision)}</td>
-                      <td>{formatPrice(trade.entry_price, precision)}</td>
-                      <td className={trade.realized_pnl >= 0 ? "positive" : "negative"}>{formatNumber(trade.realized_pnl)} {replay.account_currency}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+          <div className="table-scroll review-list">
+            {displayClosedTrades.map((trade) => (
+              <TradeReview
+                key={trade.id}
+                trade={trade}
+                replay={replay}
+                precision={precision}
+                busy={busy}
+                onFocus={handleFocus}
+              />
+            ))}
+            {canLoadOlderTrades && (
+              <div className="load-older">
+                <button type="button" onClick={() => void loadOlderTrades()} disabled={historyLoading}>
+                  {historyLoading ? "Loading older trades…" : "Load older trades"}
+                </button>
+              </div>
+            )}
+          </div>
           )}
         </section>
       </div>
     </main>
   );
 }
+
+// The fill ledger can hold many thousands of rows once older history has
+// been loaded. Memoizing the body on its row array reference means a replay
+// step that adds no fills re-renders zero rows — the parent re-renders with
+// a stable `displayFills` reference and React skips this subtree.
+const FillLedgerBody = memo(function FillLedgerBody({ fills, precision }: {
+  fills: Fill[];
+  precision: number;
+}) {
+  return (
+    <div className="table-scroll">
+      <table>
+        <thead><tr><th>Time (UTC)</th><th>Reason</th><th>Qty</th><th>Market</th><th>Fill</th><th>Gross</th><th>Commission</th><th>Spread</th><th>Slippage</th><th>Net</th></tr></thead>
+        <tbody>
+          {fills.map((fill) => (
+            <tr key={fill.id}>
+              <td><time dateTime={fill.timestamp} title={fill.time_precision === null || fill.time_precision === "legacy" ? "Precise execution timing unavailable for this legacy fill" : undefined}>{formatExecutionTime(fill)}</time></td>
+              <td><span className="reason-chip">{fill.reason.replaceAll("_", " ")}</span></td>
+              <td>{formatAdaptiveNumber(fill.quantity)}</td>
+              <td>{formatPrice(fill.market_price, precision)}</td>
+              <td>{formatPrice(fill.price, precision)}</td>
+              <td>{formatNumber(fill.gross_pnl)}</td>
+              <td>{formatAdaptiveNumber(fill.commission)}</td>
+              <td>{formatNumber(fill.spread_cost)}</td>
+              <td>{formatNumber(fill.slippage_cost)}</td>
+              <td className={fill.pnl >= 0 ? "positive" : "negative"}>{formatNumber(fill.pnl)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+});

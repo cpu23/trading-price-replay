@@ -24,6 +24,10 @@ jobs:
       - run: uv python install 3.12
       - run: uv sync --locked --dev
       - run: uv run pytest
+      - name: Check committed OpenAPI schema matches the code
+        run: |
+          uv run python -m scripts.export_openapi
+          git diff --exit-code -- openapi.json
 
   frontend:
     name: Frontend tests and build
@@ -39,9 +43,39 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
+      - name: Check generated API types match the committed OpenAPI schema
+        run: npm run check:types
       - run: npm test
       - run: npm run build
       - run: npm audit --audit-level=high
+
+  e2e:
+    name: Frontend e2e
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - run: uv python install 3.12
+        working-directory: backend
+      - run: uv sync --locked --dev
+        working-directory: backend
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Run Playwright e2e
+        run: npm run test:e2e
+        env:
+          CI: "true"
 
   downloader:
     name: Downloader tests

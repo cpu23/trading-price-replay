@@ -8,7 +8,8 @@ from fastapi.testclient import TestClient
 from app import config, market_data, repository
 from app.domain import Fill, ReplayState, Trade
 from app.main import app
-from app.service import MAX_RESPONSE_CLOSED_TRADES, MAX_RESPONSE_FILLS, _state_response
+from app.stats import build_accumulator_from_history
+from app.service import MAX_RESPONSE_CLOSED_TRADES, MAX_RESPONSE_FILLS, _snapshot_response
 
 
 def ts(minute: int = 0) -> datetime:
@@ -51,7 +52,7 @@ def build_big_state(closed_count: int = MAX_RESPONSE_CLOSED_TRADES + 50,
 
 def test_response_caps_history_but_keeps_every_open_trade():
     state = build_big_state()
-    response = _state_response(state, [], [])
+    response = _snapshot_response(state, [], [])
 
     open_ids = [trade.id for trade in state.trades if trade.status == "open"]
     returned_open = [trade for trade in response["trades"] if trade["status"] == "open"]
@@ -88,7 +89,7 @@ def test_response_within_bounds_reports_no_truncation():
         id=str(uuid4()), trade_id=trade_id, session_id=state.id, timestamp=ts(0),
         price=10.0, quantity=1.0, reason="entry", pnl=-0.5, market_price=10.0,
     ))
-    response = _state_response(state, [], [])
+    response = _snapshot_response(state, [], [])
     assert response["closed_trades_total"] == 0
     assert response["closed_trades_truncated"] is False
     assert response["fills_total"] == 1
@@ -135,9 +136,12 @@ def test_persisted_history_stays_complete_and_repeated_saves_skip_immutable_rows
     repository.save_session(state, "first_save")
     loaded = repository.load_session(state.id)
     assert loaded is not None
-    # Persistence is complete: reloading restores every trade and fill for stats.
-    assert len(loaded.trades) == 253
-    assert len(loaded.fills) == 1503
+    # Persistence is complete in the tables; a routine load hydrates only the
+    # working set (every open trade + bounded recent windows) plus totals.
+    assert len(loaded.trades) == MAX_RESPONSE_CLOSED_TRADES + 3
+    assert len(loaded.fills) == MAX_RESPONSE_FILLS
+    assert loaded.closed_trades_total == 250
+    assert loaded.fills_total == 1503
 
     # A second save with an unchanged state writes no trades/fills rows at all.
     counter = _count_row_writes(monkeypatch)
@@ -153,9 +157,11 @@ def test_persisted_history_stays_complete_and_repeated_saves_skip_immutable_rows
     repository.save_session(state, "third_save")
     assert counter[0] == 1
     reloaded = repository.load_session(state.id)
-    assert reloaded.trades[0].realized_pnl == state.trades[0].realized_pnl
-    assert len(reloaded.trades) == 253
-    assert len(reloaded.fills) == 1503
+    # The changed row is a closed trade outside the hydrated window: verify it
+    # through the single-row query, not the working set.
+    assert repository.get_trade(state.id, state.trades[0].id).realized_pnl == state.trades[0].realized_pnl
+    assert len(reloaded.trades) == MAX_RESPONSE_CLOSED_TRADES + 3
+    assert len(reloaded.fills) == MAX_RESPONSE_FILLS
 
 
 def test_rolled_back_save_never_advances_row_tracking(db_paths, monkeypatch):
@@ -201,6 +207,14 @@ def client(tmp_path, monkeypatch):
 def test_api_returns_bounded_history_with_totals_and_full_stats(client):
     state = build_big_state()
     state.symbol = "EURUSD"
+    # Simulate the schema-v6 backfill: a legacy session's persisted snapshot
+    # carries the accumulator and exact history totals rebuilt from its full
+    # ledger history, so the stats endpoint reports full-session numbers without
+    # scanning history.
+    state.accumulator = build_accumulator_from_history(state, state.trades, state.fills)
+    state.closed_trades_total = sum(1 for t in state.trades if t.status == "closed")
+    state.fills_total = len(state.fills)
+    full_history_net_pnl = sum(fill.pnl for fill in state.fills)
     repository.save_session(state, "seeded")
     body = client.get(f"/api/replay/sessions/{state.id}/state").json()
     assert body["closed_trades_total"] == 250
@@ -213,4 +227,4 @@ def test_api_returns_bounded_history_with_totals_and_full_stats(client):
     # The stats endpoint reports full-session numbers, not the capped arrays.
     stats = client.get(f"/api/replay/sessions/{state.id}/stats").json()
     assert stats["trades_completed"] == 250
-    assert stats["net_pnl"] == sum(fill.pnl for fill in state.fills)
+    assert stats["net_pnl"] == full_history_net_pnl

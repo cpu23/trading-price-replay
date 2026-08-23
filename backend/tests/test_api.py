@@ -24,7 +24,8 @@ def test_api_import_replay_trade_and_resume(tmp_path, monkeypatch):
         }).json()
         session_id = session["id"]
         stepped = client.post(f"/api/replay/sessions/{session_id}/step").json()
-        assert stepped["current_market_time"].endswith("17:01:00+00:00")
+        assert stepped["current_market_time"].endswith("17:02:00+00:00")
+        assert stepped["current_candle_time"].endswith("17:01:00+00:00")
         trade = client.post(f"/api/replay/sessions/{session_id}/orders/market", json={
             "direction": "long", "quantity": 1, "stop_price": 1.0, "target_price": 2.0,
         })

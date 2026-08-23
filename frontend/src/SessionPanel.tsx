@@ -2,7 +2,7 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import { api, errorMessage } from "./api";
 import { fromDateTimeLocalValue, toDateTimeLocalValue, validateReplayRange } from "./helpers";
 import { SESSION_STORAGE_KEY, useReplayStore } from "./store";
-import type { ReplayState } from "./types";
+import type { TimeframeProfile } from "./types";
 
 export function SessionPanel() {
   const symbols = useReplayStore((state) => state.symbols);
@@ -16,7 +16,7 @@ export function SessionPanel() {
   const [symbol, setSymbol] = useState("");
   const [start, setStart] = useState("");
   const [end, setEnd] = useState("");
-  const [profile, setProfile] = useState("utc_aligned");
+  const [profile, setProfile] = useState<TimeframeProfile>("utc_aligned");
   const [contextBars, setContextBars] = useState(1000);
   const [initialBalance, setInitialBalance] = useState(10000);
   const [spread, setSpread] = useState(0);
@@ -41,7 +41,7 @@ export function SessionPanel() {
     setSymbol(selected.symbol);
     setStart(toDateTimeLocalValue(selected.first_timestamp));
     setEnd(toDateTimeLocalValue(selected.last_timestamp));
-    setProfile(selected.default_profile);
+    setProfile(selected.default_profile === "new_york_close" ? "new_york_close" : "utc_aligned");
     setFormError("");
   }, [selected?.symbol, selected?.first_timestamp, selected?.last_timestamp, selected?.default_profile]);
 
@@ -70,7 +70,7 @@ export function SessionPanel() {
     const endUtc = fromDateTimeLocalValue(end);
     if (!startUtc || !endUtc) return;
     setFormError("");
-    await action(() => api.post<ReplayState>("/api/replay/sessions", {
+    await action(() => api.createSession({
       symbol: selected.symbol,
       start: startUtc,
       end: endUtc,
@@ -91,7 +91,7 @@ export function SessionPanel() {
     setDeleting(sessionId);
     setDeleteError("");
     try {
-      await api.delete(`/api/replay/sessions/${sessionId}`);
+      await api.deleteSession(sessionId);
       if (localStorage.getItem(SESSION_STORAGE_KEY) === sessionId) {
         localStorage.removeItem(SESSION_STORAGE_KEY);
       }
@@ -159,7 +159,7 @@ export function SessionPanel() {
               </div>
               <div className="field-group">
                 <label htmlFor="session-profile">Candle alignment</label>
-                <select id="session-profile" value={profile} onChange={(event) => setProfile(event.target.value)}>
+                <select id="session-profile" value={profile} onChange={(event) => setProfile(event.target.value === "new_york_close" ? "new_york_close" : "utc_aligned")}>
                   <option value="utc_aligned">UTC aligned</option>
                   <option value="new_york_close">New York close</option>
                 </select>
@@ -242,7 +242,7 @@ export function SessionPanel() {
                   </div>
                 ) : (
                   <div className="row-actions">
-                    <button className="button-primary button-small" type="button" onClick={() => void action(() => api.get<ReplayState>(`/api/replay/sessions/${session.id}/state`))} disabled={busy}>
+                    <button className="button-primary button-small" type="button" onClick={() => void action(() => api.getSessionState(session.id))} disabled={busy}>
                       Resume
                     </button>
                     <button className="button-quiet button-small" type="button" onClick={() => setConfirmDelete(session.id)} disabled={busy}>
