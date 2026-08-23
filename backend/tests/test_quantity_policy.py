@@ -60,11 +60,14 @@ def test_resolve_close_classifies_the_window():
     # Genuine remainders, however small, are preserved.
     assert resolve_close(1.0, 0.9999999999995) == pytest.approx(5e-13, rel=1e-3)
     assert resolve_close(1e-12, 1e-13) == 9e-13
+    assert resolve_close(1e-323, 5e-324) == 5e-324
     # True oversize (beyond the ULP window) is rejected.
     with pytest.raises(ValueError):
         resolve_close(0.3, 0.4)
     with pytest.raises(ValueError):
         resolve_close(0.3, 0.3000000001)
+    with pytest.raises(ValueError):
+        resolve_close(5e-324, 1e-321)
 
 
 def test_zero_point_three_closed_in_tenths_displays_clean_remainders():

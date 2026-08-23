@@ -15,9 +15,9 @@ and in storage (legacy sessions load unchanged), so the policy:
   closed in many chunks (e.g. the 1e-16 dust after three
   0.3333333333333333 closes of a 1.0 position). The window is a fixed number
   of ULPs of the larger quantity in play, never an absolute or relative
-  epsilon, and there is no symbol lot step. Tiny positions keep the same
-  scale-sensitive treatment as large ones: the required 5e-13 remainder on a
-  1.0 position and 9e-13 remainder on a 1e-12 position both remain open;
+  epsilon, and is disabled when it would be as large as either operand. That
+  exact-comparison fallback preserves subnormal quantities whose adjacent
+  floats are too coarse for a multi-ULP tolerance;
 - a tolerated final close books the actual pre-close remainder as the fill
   quantity and stores remainder exactly 0.0, so the final close never
   fabricates quantity;
@@ -41,8 +41,10 @@ _ULP_WINDOW = 256
 
 
 def _tolerance(remaining_quantity: float, requested: float) -> Decimal:
-    """Representational residual/overshoot to absorb, scaled only in ULPs."""
+    """Return a non-material representational residual/overshoot window."""
     value = _ULP_WINDOW * max(ulp(remaining_quantity), ulp(requested))
+    if value >= min(remaining_quantity, requested):
+        return Decimal(0)
     return Decimal.from_float(value)
 
 
