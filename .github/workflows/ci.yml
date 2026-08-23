@@ -76,6 +76,14 @@ jobs:
         run: npm run test:e2e
         env:
           CI: "true"
+      - name: Upload Playwright diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-diagnostics
+          path: frontend/test-results
+          if-no-files-found: ignore
+          retention-days: 7
 
   downloader:
     name: Downloader tests
