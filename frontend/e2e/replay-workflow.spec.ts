@@ -125,17 +125,20 @@ test("focuses the chart on a closed trade and returns to the latest area", async
 });
 
 test("loads older closed-trade and fill history, then keeps stepping live", async ({ page, request }) => {
+  test.setTimeout(120_000);
   // Seed 501 closed trades (1002 fills) at the first revealed price — past
-  // both first-page caps (200 closed trades / 1000 fills).
+  // both first-page caps (200 closed trades / 1000 fills). Open every trade
+  // first, then close them in one mutation to keep CI setup bounded and cover
+  // the large close-all response path.
   await request.post(`/api/replay/sessions/${sessionId}/step`);
   for (let i = 0; i < 501; i++) {
     const opened = await request.post(`/api/replay/sessions/${sessionId}/orders/market`, {
       data: { direction: "long", quantity: 1 },
     });
     expect(opened.status()).toBe(200);
-    const closed = await request.post(`/api/replay/sessions/${sessionId}/close-all`);
-    expect(closed.status()).toBe(200);
   }
+  const closed = await request.post(`/api/replay/sessions/${sessionId}/close-all`);
+  expect(closed.status()).toBe(200);
 
   await openWorkspace(page);
 
