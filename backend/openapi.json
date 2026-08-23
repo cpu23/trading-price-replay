@@ -1199,28 +1199,70 @@
       "SessionStats": {
         "properties": {
           "average_holding_seconds": {
-            "title": "Average Holding Seconds",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Average Holding Seconds"
           },
           "average_losing_r": {
-            "title": "Average Losing R",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Average Losing R"
           },
           "average_loss": {
-            "title": "Average Loss",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Average Loss"
           },
           "average_r": {
-            "title": "Average R",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Average R"
           },
           "average_win": {
-            "title": "Average Win",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Average Win"
           },
           "average_win_r": {
-            "title": "Average Win R",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Average Win R"
           },
           "balance": {
             "title": "Balance",
@@ -1251,8 +1293,15 @@
             "type": "number"
           },
           "profit_factor": {
-            "title": "Profit Factor",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profit Factor"
           },
           "short_pnl": {
             "title": "Short Pnl",
@@ -1287,8 +1336,15 @@
             "type": "number"
           },
           "win_rate": {
-            "title": "Win Rate",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Win Rate"
           }
         },
         "required": [

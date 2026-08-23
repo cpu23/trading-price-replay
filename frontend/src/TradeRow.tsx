@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "./api";
-import { formatAdaptiveNumber, formatNumber, formatPrice, utcDateTime } from "./helpers";
+import { closeQuantityExceedsRemainder, formatAdaptiveNumber, formatNumber, formatPrice, parsePositiveQuantity, quantityDraft, utcDateTime } from "./helpers";
 import type { ReplaySnapshot, ReplayUpdate, Trade } from "./types";
 
 type TradeRowProps = {
@@ -12,13 +12,21 @@ type TradeRowProps = {
 };
 
 export function TradeRow({ trade, replay, precision, busy, action }: TradeRowProps) {
-  const [closeQuantity, setCloseQuantity] = useState(trade.remaining_quantity);
+  // The close quantity is string-backed so empty/incomplete decimal drafts
+  // survive editing; it is parsed only when Close is pressed.
+  const [closeQuantity, setCloseQuantity] = useState(quantityDraft(trade.remaining_quantity));
   const [stop, setStop] = useState(trade.stop_price?.toString() ?? "");
   const [target, setTarget] = useState(trade.target_price?.toString() ?? "");
   const [validationError, setValidationError] = useState("");
 
   useEffect(() => {
-    setCloseQuantity((value) => Math.min(value, trade.remaining_quantity));
+    setCloseQuantity((value) => {
+      const parsed = parsePositiveQuantity(value);
+      if (parsed === null) return value;
+      return closeQuantityExceedsRemainder(parsed, trade.remaining_quantity)
+        ? quantityDraft(trade.remaining_quantity)
+        : value;
+    });
   }, [trade.remaining_quantity]);
 
   useEffect(() => {
@@ -26,9 +34,13 @@ export function TradeRow({ trade, replay, precision, busy, action }: TradeRowPro
     setTarget(trade.target_price?.toString() ?? "");
   }, [trade.stop_price, trade.target_price]);
 
-  async function closeTrade(quantity: number) {
-    if (!Number.isFinite(quantity) || quantity <= 0 || quantity > trade.remaining_quantity) {
-      setValidationError(`Close quantity must be greater than zero and no more than ${trade.remaining_quantity}.`);
+  async function closeTrade(quantity: number | null) {
+    if (quantity === null || !Number.isFinite(quantity) || quantity <= 0) {
+      setValidationError("Enter a finite close quantity greater than zero.");
+      return;
+    }
+    if (closeQuantityExceedsRemainder(quantity, trade.remaining_quantity)) {
+      setValidationError(`Close quantity cannot exceed ${formatAdaptiveNumber(trade.remaining_quantity)}.`);
       return;
     }
     setValidationError("");
@@ -97,14 +109,12 @@ export function TradeRow({ trade, replay, precision, busy, action }: TradeRowPro
           <div className="input-action multi-action">
             <input
               id={`close-${trade.id}`}
-              type="number"
-              min="0.00000001"
-              max={trade.remaining_quantity}
-              step="any"
+              type="text"
+              inputMode="decimal"
               value={closeQuantity}
-              onChange={(event) => setCloseQuantity(Number(event.target.value))}
+              onChange={(event) => setCloseQuantity(event.target.value)}
             />
-            <button type="button" onClick={() => void closeTrade(closeQuantity)} disabled={busy}>Close</button>
+            <button type="button" onClick={() => void closeTrade(parsePositiveQuantity(closeQuantity))} disabled={busy}>Close</button>
             <button type="button" onClick={() => void closeTrade(trade.remaining_quantity / 2)} disabled={busy}>50%</button>
             <button type="button" onClick={() => void closeTrade(trade.remaining_quantity)} disabled={busy}>All</button>
           </div>

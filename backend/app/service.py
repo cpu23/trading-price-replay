@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from .domain import ReplayState, Trade, bar_reveal_time, serializable, state_snapshot
 from .execution import close_trade, open_trade, process_bar, update_close_excursions
 from .indicators import sma
-from .market_data import RangeBars, bars_signature, load_bars_before, load_bars_range
+from .market_data import RangeBars, bars_signature, load_bars_before
 from .repository import (_trade_fingerprint, get_last_fill_anchor, get_symbol, get_trade,
                          get_trade_fills, get_trade_reviews, list_fills, list_trades,
                          load_state_cached, save_session, upsert_trade_review)

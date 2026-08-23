@@ -80,7 +80,6 @@ def test_resumed_session_keeps_pinned_metadata_after_reimport(client, tmp_path):
 def test_legacy_session_without_pinned_fields_loads_and_responds(client, tmp_path):
     # Simulate a pre-pinning legacy session: its state JSON has no
     # price_precision/pnl_currency/contract_multiplier keys at all.
-    fixture = Path(__file__).parent / "fixtures" / "dukascopy_1m.csv"
     legacy = ReplayState.create(
         symbol="EURUSD", start=datetime(2026, 1, 2, 17, 0, tzinfo=timezone.utc),
         end=datetime(2026, 1, 2, 17, 6, tzinfo=timezone.utc), profile="utc_aligned",

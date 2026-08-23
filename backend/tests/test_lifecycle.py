@@ -308,11 +308,19 @@ def test_stats_are_reported_from_core_engine(client):
     session_id = create_session(client)["id"]
     state = client.get(f"/api/replay/sessions/{session_id}/state").json()
     stats = state["stats"]
-    for key in ("trades_opened", "trades_completed", "win_rate", "net_pnl", "gross_pnl", "trading_costs",
-                "commission_paid", "spread_cost", "slippage_cost", "unrealized_pnl", "balance", "equity",
-                "total_r", "average_r", "average_win", "average_loss", "profit_factor", "max_drawdown",
-                "long_pnl", "short_pnl"):
+    numeric = (
+        "trades_opened", "trades_completed", "net_pnl", "gross_pnl", "trading_costs",
+        "commission_paid", "spread_cost", "slippage_cost", "unrealized_pnl", "balance",
+        "equity", "total_r", "max_drawdown", "long_pnl", "short_pnl",
+    )
+    for key in numeric:
         assert isinstance(stats[key], (int, float)), key
+    undefined = (
+        "win_rate", "average_r", "average_win_r", "average_losing_r", "average_win",
+        "average_loss", "profit_factor", "average_holding_seconds",
+    )
+    for key in undefined:
+        assert stats[key] is None, key
     assert stats["balance"] == stats["equity"]  # nothing open, nothing realized
     assert client.get(f"/api/replay/sessions/{session_id}/stats").json() == stats
 

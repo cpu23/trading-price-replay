@@ -5,6 +5,7 @@ from math import isfinite
 from uuid import uuid4
 
 from .domain import Bar, Fill, ReplayState, TimePrecision, Trade, bar_reveal_time
+from .quantity import resolve_close
 from .stats import book_fill, book_trade_close
 
 
@@ -101,15 +102,26 @@ def close_trade(state: ReplayState, trade: Trade, now: datetime, price: float, q
     execution window. `source_candle_time` is the candle the execution
     belongs to for chart rendering (the touched candle's open for
     stop/target fills, the revealed candle for manual closes); the execution
-    timestamp is never repurposed for chart alignment. When the remaining
-    quantity reaches exactly zero the trade's final-exit metadata and
-    trade-level statistics are persisted.
+    timestamp is never repurposed for chart alignment. The executed quantity
+    and the stored remainder are resolved here through the centralized
+    quantity policy (`resolve_close`), so every close path — manual, close-all,
+    stop/target — inherits the same semantics: a close is final when the
+    requested quantity matches the stored remainder exactly or within the
+    ULP-scaled tolerance for representational residual/overshoot; the fill
+    then books the actual pre-close remainder, the stored remainder is set to
+    exactly 0.0, and the trade's final-exit metadata and trade-level
+    statistics are persisted. A partial close outside the representational
+    window preserves its remainder at any quantity scale.
     """
     _require_finite(price, "price")
     _require_finite_positive(quantity, "quantity")
     _require_finite_positive(contract_multiplier, "contract_multiplier")
-    if quantity > trade.remaining_quantity:
-        raise ValueError("close quantity must be positive and no greater than remaining quantity")
+    remaining_quantity = resolve_close(trade.remaining_quantity, quantity)
+    final_close = remaining_quantity == 0.0
+    # A final close books the actual pre-close remainder: the request may
+    # differ from it only by float-storage artifacts. A partial close books
+    # exactly the requested quantity.
+    executed_quantity = trade.remaining_quantity if final_close else quantity
     # Exact fills collapse the window onto the exact timestamp (callers that
     # omit the window get this for free; bar_interval fills must pass it).
     if precision == "exact" and window_start is None:
@@ -118,28 +130,25 @@ def close_trade(state: ReplayState, trade: Trade, now: datetime, price: float, q
     execution_price = _execution_price(state, price, trade.direction, is_entry=False)
     # Gross P&L is measured at reference (mid) prices; the fill's own costs are
     # subtracted once below, so the adverse exit adjustment is not double-counted.
-    gross_pnl = sign * (price - trade.entry_market_price) * quantity * contract_multiplier * state.conversion_rate
-    commission, spread_cost, slippage_cost = state.fill_costs(quantity, contract_multiplier)
+    gross_pnl = sign * (price - trade.entry_market_price) * executed_quantity * contract_multiplier * state.conversion_rate
+    commission, spread_cost, slippage_cost = state.fill_costs(executed_quantity, contract_multiplier)
     net_pnl = gross_pnl - (commission + spread_cost + slippage_cost)
     if not all(isfinite(value) for value in (execution_price, gross_pnl, commission, spread_cost, slippage_cost, net_pnl)):
         raise ValueError("derived exit values must be finite")
     fill = Fill(
         id=str(uuid4()), trade_id=trade.id, session_id=state.id, timestamp=now,
-        price=execution_price, quantity=quantity, reason=reason,
+        price=execution_price, quantity=executed_quantity, reason=reason,
         pnl=net_pnl, market_price=price, gross_pnl=gross_pnl,
         commission=commission, spread_cost=spread_cost, slippage_cost=slippage_cost,
         time_precision=precision, execution_window_start=window_start, execution_window_end=window_end,
         source_candle_time=source_candle_time,
     )
-    trade.remaining_quantity -= quantity
+    trade.remaining_quantity = remaining_quantity
     trade.realized_pnl += net_pnl
     trade.total_commission += commission
     trade.total_spread_cost += spread_cost
     trade.total_slippage_cost += slippage_cost
-    # A trade closes only when the requested quantity exactly matches the
-    # pre-close remainder (the subtraction then yields exact zero). Any true
-    # partial close preserves its remainder regardless of how small it is.
-    if trade.remaining_quantity == 0:
+    if final_close:
         trade.status = "closed"
         trade.exit_market_price = price
         trade.exit_price = execution_price
@@ -151,7 +160,7 @@ def close_trade(state: ReplayState, trade: Trade, now: datetime, price: float, q
     state.fills.append(fill)
     state.fills_total += 1
     book_fill(state, trade.direction, fill)
-    if trade.status == "closed":
+    if final_close:
         state.closed_trades_total += 1
         book_trade_close(state, trade, now)
     return fill

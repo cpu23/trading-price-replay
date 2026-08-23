@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { apiErrorDetail } from "../src/api";
 import {
+  REPLAY_STEP_SIZES,
+  canActShortcut,
+  clampFocusViewport,
+  closeQuantityExceedsRemainder,
+  focusRequestIsCurrent,
+  focusSettingsSignature,
+  focusWithinLiveBounds,
   formatAdaptiveNumber,
   formatDuration,
   formatExecutionTime,
@@ -8,9 +15,15 @@ import {
   formatStatistic,
   fromDateTimeLocalValue,
   historyCountLabel,
+  isEditableKeyboardTarget,
   isTimestampWithinRange,
+  intersectTimeRangeWithBarBounds,
+  parsePositiveQuantity,
   parseTags,
+  quantityDraft,
   replayProgress,
+  stepSizeOptions,
+  tradeFocusEnd,
   toDateTimeLocalValue,
   utcDateTime,
   validateOrderTicket,
@@ -43,7 +56,7 @@ describe("UTC datetime-local conversion", () => {
 
 describe("order ticket validation", () => {
   const baseTicket = {
-    quantity: 1,
+    quantity: "1",
     stop: "",
     target: "",
     currentPrice: 100,
@@ -81,10 +94,264 @@ describe("order ticket validation", () => {
   it("blocks repeated entry paths before a causal price is available", () => {
     expect(validateOrderTicket({ ...baseTicket, direction: "long", canEnter: false }))
       .toBe("A causal market price is required before placing an order.");
-    expect(validateOrderTicket({ ...baseTicket, direction: "long", quantity: 0 }))
+  });
+
+  it("rejects empty, non-finite, and non-positive quantity drafts with actionable messages", () => {
+    expect(validateOrderTicket({ ...baseTicket, direction: "long", quantity: "" }))
+      .toBe("Enter a quantity greater than zero.");
+    expect(validateOrderTicket({ ...baseTicket, direction: "long", quantity: "   " }))
+      .toBe("Enter a quantity greater than zero.");
+    expect(validateOrderTicket({ ...baseTicket, direction: "long", quantity: "." }))
+      .toBe("Quantity must be a finite decimal number greater than zero.");
+    expect(validateOrderTicket({ ...baseTicket, direction: "long", quantity: "abc" }))
+      .toBe("Quantity must be a finite decimal number greater than zero.");
+    expect(validateOrderTicket({ ...baseTicket, direction: "long", quantity: "1e999" }))
+      .toBe("Quantity must be a finite decimal number greater than zero.");
+    expect(validateOrderTicket({ ...baseTicket, direction: "long", quantity: "0" }))
+      .toBe("Quantity must be greater than zero.");
+    expect(validateOrderTicket({ ...baseTicket, direction: "long", quantity: "-2" }))
       .toBe("Quantity must be greater than zero.");
   });
+
+  it("accepts incomplete-but-valid decimal drafts and legitimate tiny quantities", () => {
+    expect(validateOrderTicket({ ...baseTicket, direction: "long", quantity: "1." })).toBeNull();
+    expect(validateOrderTicket({ ...baseTicket, direction: "long", quantity: "0.00000001" })).toBeNull();
+    expect(validateOrderTicket({ ...baseTicket, direction: "long", quantity: "0.0000000001" })).toBeNull();
+    expect(validateOrderTicket({ ...baseTicket, direction: "long", quantity: "2.5" })).toBeNull();
+  });
 });
+
+describe("quantity draft parsing", () => {
+  it("parses finite positive drafts on action and rejects everything else", () => {
+    expect(parsePositiveQuantity("1")).toBe(1);
+    expect(parsePositiveQuantity("1.")).toBe(1);
+    expect(parsePositiveQuantity("0.5")).toBe(0.5);
+    expect(parsePositiveQuantity("0.00000001")).toBe(1e-8);
+    expect(parsePositiveQuantity("0.")).toBeNull();
+    expect(parsePositiveQuantity(".")).toBeNull();
+    expect(parsePositiveQuantity("")).toBeNull();
+    expect(parsePositiveQuantity("  ")).toBeNull();
+    expect(parsePositiveQuantity("abc")).toBeNull();
+    expect(parsePositiveQuantity("1e999")).toBeNull();
+    expect(parsePositiveQuantity("-1")).toBeNull();
+    expect(parsePositiveQuantity("0")).toBeNull();
+  });
+
+  it("renders persisted quantities without precision loss", () => {
+    expect(quantityDraft(1)).toBe("1");
+    expect(quantityDraft(0.5)).toBe("0.5");
+    expect(quantityDraft(1e-8)).toBe("1e-8");
+    expect(quantityDraft(5e-324)).toBe("5e-324");
+    expect(quantityDraft(Number.NaN)).toBe("");
+  });
+
+  it("accepts float dust but rejects materially oversized closes", () => {
+    expect(closeQuantityExceedsRemainder(0.2, 0.19999999999999998)).toBe(false);
+    expect(closeQuantityExceedsRemainder(0.30000000000000004, 0.3)).toBe(false);
+    expect(closeQuantityExceedsRemainder(0.3000000001, 0.3)).toBe(true);
+    expect(closeQuantityExceedsRemainder(0.4, 0.3)).toBe(true);
+    expect(closeQuantityExceedsRemainder(1.0, 1.0 - 5e-13)).toBe(true);
+    expect(closeQuantityExceedsRemainder(2 * Number.MIN_VALUE, Number.MIN_VALUE)).toBe(false);
+    expect(closeQuantityExceedsRemainder(258 * Number.MIN_VALUE, Number.MIN_VALUE)).toBe(true);
+  });
+});
+
+describe("live focus bounds", () => {
+  const first = "2025-02-03T14:00:00.000Z";
+  const last = "2025-02-03T14:10:00.000Z";
+
+  it("accepts a trade span inside the revealed payload", () => {
+    expect(focusWithinLiveBounds("2025-02-03T14:01:00Z", "2025-02-03T14:09:00Z", first, last)).toBe(true);
+    expect(focusWithinLiveBounds(first, last, first, last)).toBe(true);
+  });
+
+  it("rejects spans that slid outside the live bounds", () => {
+    expect(focusWithinLiveBounds("2025-02-03T13:59:00Z", "2025-02-03T14:02:00Z", first, last)).toBe(false);
+    expect(focusWithinLiveBounds("2025-02-03T14:02:00Z", "2025-02-03T14:11:00Z", first, last)).toBe(false);
+  });
+
+  it("rejects when the live payload has no bounds", () => {
+    expect(focusWithinLiveBounds("2025-02-03T14:01:00Z", "2025-02-03T14:02:00Z", undefined, undefined)).toBe(false);
+    expect(focusWithinLiveBounds("2025-02-03T14:01:00Z", "2025-02-03T14:02:00Z", first, undefined)).toBe(false);
+  });
+});
+
+describe("focus request settings", () => {
+  it("gives equivalent indicator sets the same scalar signature", () => {
+    expect(focusSettingsSignature("5m", ["sma_close_35", "ema_close_12"]))
+      .toBe(focusSettingsSignature("5m", ["ema_close_12", "sma_close_35"]));
+    expect(focusSettingsSignature("15m", ["ema_close_12", "sma_close_35"]))
+      .not.toBe(focusSettingsSignature("5m", ["ema_close_12", "sma_close_35"]));
+    expect(focusSettingsSignature("5m", ["sma_close_35"]))
+      .not.toBe(focusSettingsSignature("5m", []));
+  });
+
+  it("installs only the matching new window when settings change before the old response resolves", async () => {
+    let generation = 1;
+    let currentSettings = focusSettingsSignature("1m", []);
+    const oldGeneration = generation;
+    const oldSettings = currentSettings;
+    const installed: string[] = [];
+    let resolveOld!: (value: string) => void;
+    const oldResponse = new Promise<string>((resolve) => { resolveOld = resolve; });
+    const oldInstall = oldResponse.then((window) => {
+      if (focusRequestIsCurrent(
+        oldGeneration,
+        oldSettings,
+        generation,
+        currentSettings,
+      )) installed.push(window);
+    });
+
+    // The commit-time signature changes before the refocus can bump the
+    // generation, so this settlement is rejected specifically by settings.
+    currentSettings = focusSettingsSignature("5m", ["sma_close_35"]);
+    resolveOld("old 1m window");
+    await oldInstall;
+    expect(installed).toEqual([]);
+
+    generation += 1;
+    const newGeneration = generation;
+    const newSettings = currentSettings;
+    let resolveNew!: (value: string) => void;
+    const newResponse = new Promise<string>((resolve) => { resolveNew = resolve; });
+    const newInstall = newResponse.then((window) => {
+      if (focusRequestIsCurrent(
+        newGeneration,
+        newSettings,
+        generation,
+        currentSettings,
+      )) installed.push(window);
+    });
+    resolveNew("new 5m SMA window");
+    await newInstall;
+
+    expect(installed).toEqual(["new 5m SMA window"]);
+  });
+});
+
+describe("trade focus anchors", () => {
+  it("uses the final fill's source candle instead of its later reveal timestamp", () => {
+    const trade = {
+      id: "trade-1",
+      entry_time: "2025-02-03T14:01:00Z",
+      entry_source_candle_time: "2025-02-03T14:00:00Z",
+      exit_time: "2025-02-03T14:07:00Z",
+    };
+    const fills = [
+      {
+        trade_id: "trade-1",
+        reason: "entry",
+        timestamp: "2025-02-03T14:01:00Z",
+        source_candle_time: "2025-02-03T14:00:00Z",
+      },
+      {
+        trade_id: "trade-1",
+        reason: "manual",
+        timestamp: "2025-02-03T14:07:00Z",
+        source_candle_time: "2025-02-03T14:06:00Z",
+      },
+    ];
+    expect(tradeFocusEnd(trade, fills)).toBe("2025-02-03T14:06:00Z");
+  });
+});
+
+describe("captured live viewport intersection", () => {
+  const liveBounds = { first: 1000, last: 2000 };
+
+  it("preserves a captured range with full overlap", () => {
+    expect(intersectTimeRangeWithBarBounds({ from: 1200, to: 1800 }, liveBounds))
+      .toEqual({ from: 1200, to: 1800 });
+  });
+
+  it("clamps a partially overlapping range to the live bars", () => {
+    expect(intersectTimeRangeWithBarBounds({ from: 800, to: 1500 }, liveBounds))
+      .toEqual({ from: 1000, to: 1500 });
+  });
+
+  it("returns null when the captured range no longer overlaps live bars", () => {
+    expect(intersectTimeRangeWithBarBounds({ from: 400, to: 900 }, liveBounds)).toBeNull();
+    expect(intersectTimeRangeWithBarBounds({ from: 900, to: 1000 }, liveBounds)).toBeNull();
+  });
+});
+
+describe("focus viewport clamping", () => {
+  it("clamps a truncated trade's span to the returned window's last bar", () => {
+    // The trade reaches 5000s but the bounded window ends at 2000s.
+    expect(clampFocusViewport(1000, 5000, { first: 1000, last: 2000 }))
+      .toEqual({ from: 1000, to: 2000 });
+  });
+
+  it("clamps a window that starts after the trade's entry", () => {
+    expect(clampFocusViewport(900, 1800, { first: 1000, last: 2000 }))
+      .toEqual({ from: 1000, to: 1800 });
+  });
+
+  it("keeps the breathing margin inside the returned bar bounds", () => {
+    // Margin wants 300s but only 200s of slack exists on the right.
+    expect(clampFocusViewport(1500, 1700, { first: 1000, last: 2000 }))
+      .toEqual({ from: 1200, to: 2000 });
+    // Margin is fully available on both sides.
+    expect(clampFocusViewport(1500, 1600, { first: 1000, last: 2000 }))
+      .toEqual({ from: 1200, to: 1900 });
+  });
+
+  it("never extends past the window edges even for single-candle trades", () => {
+    expect(clampFocusViewport(1000, 1000, { first: 1000, last: 2000 }))
+      .toEqual({ from: 1000, to: 1000 });
+    expect(clampFocusViewport(2000, 2000, { first: 1000, last: 2000 }))
+      .toEqual({ from: 2000, to: 2000 });
+  });
+
+  it("shows the whole window when the trade span does not intersect it", () => {
+    expect(clampFocusViewport(300, 400, { first: 1000, last: 2000 }))
+      .toEqual({ from: 1000, to: 2000 });
+    expect(clampFocusViewport(3000, 3100, { first: 1000, last: 2000 }))
+      .toEqual({ from: 1000, to: 2000 });
+  });
+
+  it("applies the plain margin for a live zoom without server bounds", () => {
+    expect(clampFocusViewport(1500, 1600, null)).toEqual({ from: 1200, to: 1900 });
+  });
+});
+
+describe("step size options", () => {
+  it("offers the standard list for persisted values it contains", () => {
+    expect(stepSizeOptions(5)).toEqual(REPLAY_STEP_SIZES);
+  });
+
+  it("retains a valid off-list persisted step size instead of blanking the control", () => {
+    expect(stepSizeOptions(7)).toEqual([1, 2, 3, 5, 7, 10, 15]);
+    expect(stepSizeOptions(20)).toEqual([1, 2, 3, 5, 10, 15, 20]);
+  });
+
+  it("ignores invalid persisted values", () => {
+    expect(stepSizeOptions(0)).toEqual(REPLAY_STEP_SIZES);
+    expect(stepSizeOptions(-2)).toEqual(REPLAY_STEP_SIZES);
+    expect(stepSizeOptions(Number.NaN)).toEqual(REPLAY_STEP_SIZES);
+    expect(stepSizeOptions(2.5)).toEqual(REPLAY_STEP_SIZES);
+  });
+});
+
+describe("shortcut semantics", () => {
+  it("suppresses transport shortcuts while busy or once completed", () => {
+    expect(canActShortcut(false, "active")).toBe(true);
+    expect(canActShortcut(true, "active")).toBe(false);
+    expect(canActShortcut(false, "completed")).toBe(false);
+    expect(canActShortcut(true, "completed")).toBe(false);
+  });
+
+  it("leaves keystrokes alone while typing in editable controls", () => {
+    expect(isEditableKeyboardTarget({ tagName: "INPUT" })).toBe(true);
+    expect(isEditableKeyboardTarget({ tagName: "textarea" })).toBe(true);
+    expect(isEditableKeyboardTarget({ tagName: "SELECT" })).toBe(true);
+    expect(isEditableKeyboardTarget({ tagName: "BUTTON" })).toBe(true);
+    expect(isEditableKeyboardTarget({ isContentEditable: true })).toBe(true);
+    expect(isEditableKeyboardTarget({ tagName: "DIV" })).toBe(false);
+    expect(isEditableKeyboardTarget(null)).toBe(false);
+  });
+});
+
 
 describe("replay progress", () => {
   it("uses revealed and remaining bars and clamps invalid values", () => {
@@ -101,6 +368,8 @@ describe("adaptive numeric formatting", () => {
     expect(formatAdaptiveNumber(0.00001).replace(",", ".")).toBe("0.00001");
     expect(formatAdaptiveNumber(0.00000001).replace(",", ".")).toBe("0.00000001");
     expect(formatAdaptiveNumber(1)).toBe("1");
+    expect(formatAdaptiveNumber(1e-12).replace(",", ".")).toBe("0.000000000001");
+    expect(formatAdaptiveNumber(Number.MIN_VALUE)).toBe("5e-324");
   });
 });
 
@@ -111,6 +380,7 @@ describe("statistic formatting", () => {
     expect(formatStatistic("long_pnl", 4.125, "USD")).toBe("4.13 USD");
     expect(formatStatistic("total_r", -0.5, "USD")).toBe("-0.50 R");
     expect(formatStatistic("profit_factor", 1.6962, "USD")).toBe("1.70");
+    expect(formatStatistic("average_r", null, "USD")).toBe("—");
     expect(formatStatistic("median_r", 0.25, "USD")).toBe("0.25 R");
     expect(formatStatistic("average_win_r", 1.2, "USD")).toBe("1.20 R");
     expect(formatStatistic("average_losing_r", -0.4, "USD")).toBe("-0.40 R");

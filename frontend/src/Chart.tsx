@@ -14,7 +14,7 @@ import {
   type Time,
   type UTCTimestamp,
 } from "lightweight-charts";
-import { formatAdaptiveNumber, isTimestampWithinRange } from "./helpers";
+import { clampFocusViewport, focusWithinLiveBounds, formatAdaptiveNumber, intersectTimeRangeWithBarBounds, isTimestampWithinRange } from "./helpers";
 import type { ChartHistoryResponse, ReplayState } from "./types";
 
 function chartTime(timestamp: string): UTCTimestamp {
@@ -26,6 +26,7 @@ function chartTime(timestamp: string): UTCTimestamp {
  * replay context; the chart renders that window instead of the live payload.
  */
 type ChartFocus = { from: string; to: string; window?: ChartHistoryResponse };
+
 
 export function ReplayChart({ replay, precision, focus, onClearFocus }: {
   replay: ReplayState;
@@ -41,6 +42,16 @@ export function ReplayChart({ replay, precision, focus, onClearFocus }: {
   const priceLines = useRef<IPriceLine[]>([]);
   const previousDataLength = useRef(0);
   const wasFocused = useRef(false);
+  // The live visible range captured when a focus is applied, restored on
+  // clear so a scrolled-back view is not dumped to the latest edge.
+  const preFocusRange = useRef<{ from: Time; to: Time } | null>(null);
+  const preFocusAtLatest = useRef(true);
+  // Fresh replay payload for the focus effect, which must not re-run on
+  // every step (re-applying the zoom per step would fight the data effect).
+  const replayRef = useRef(replay);
+  useEffect(() => {
+    replayRef.current = replay;
+  }, [replay]);
 
   useEffect(() => {
     if (!container.current) return;
@@ -221,32 +232,85 @@ export function ReplayChart({ replay, precision, focus, onClearFocus }: {
   }, [replay.displayed_bars, replay.fills, replay.indicators?.sma_close_35, replay.trades, focus]);
 
   // Chart focus: zoom to a closed trade's entry-to-exit region without
-  // recreating the chart instance. Clearing focus returns the view to the
-  // latest revealed area (only if a focus was previously active).
+  // recreating the chart instance. A bounded server window clamps the
+  // viewport to the returned bar bounds (the trade's full span may reach
+  // past the window). The pre-focus live range is captured on the first
+  // focus; clearing restores it when the user had scrolled back, or follows
+  // the new latest edge when the view was pinned to the latest bar.
   useEffect(() => {
     const instance = chart.current;
     const candleSeries = candles.current;
     if (!instance || !candleSeries) return;
     if (focus) {
-      wasFocused.current = true;
-      const from = chartTime(focus.from);
-      const to = chartTime(focus.to);
-      const span = Math.max(to - from, 60);
-      const margin = Math.max(span * 0.1, 300);
+      if (!wasFocused.current) {
+        wasFocused.current = true;
+        const logicalRange = instance.timeScale().getVisibleLogicalRange();
+        preFocusAtLatest.current = !logicalRange
+          || logicalRange.to >= previousDataLength.current - 1.5;
+        preFocusRange.current = instance.timeScale().getVisibleRange();
+      }
+      const windowBars = focus.window?.displayed_bars;
+      if (windowBars && windowBars.length > 0) {
+        const bounds = {
+          first: chartTime(windowBars[0].timestamp),
+          last: chartTime(windowBars.at(-1)!.timestamp),
+        };
+        const viewport = clampFocusViewport(
+          chartTime(focus.from),
+          chartTime(focus.to),
+          bounds,
+        );
+        instance.timeScale().setVisibleRange({
+          from: viewport.from as UTCTimestamp,
+          to: viewport.to as UTCTimestamp,
+        });
+        return;
+      }
+      // Live zoom: only when the trade's span still lies inside the revealed
+      // payload. While a window is loading (or failed) for a trade that has
+      // slid out, keep the live view instead of zooming into empty space.
+      const liveBars = replayRef.current.displayed_bars;
+      if (!focusWithinLiveBounds(
+        focus.from,
+        focus.to,
+        liveBars[0]?.timestamp,
+        liveBars.at(-1)?.timestamp,
+      )) return;
+      const viewport = clampFocusViewport(
+        chartTime(focus.from),
+        chartTime(focus.to),
+        null,
+      );
       instance.timeScale().setVisibleRange({
-        from: (from - margin) as UTCTimestamp,
-        to: (to + margin) as UTCTimestamp,
+        from: viewport.from as UTCTimestamp,
+        to: viewport.to as UTCTimestamp,
       });
       return;
     }
     if (!wasFocused.current) return;
     wasFocused.current = false;
-    const data = candleSeries.data();
-    if (data.length >= 10) {
-      instance.timeScale().setVisibleLogicalRange({ from: data.length - 60, to: data.length + 5 });
+    const captured = preFocusRange.current;
+    const liveBars = replayRef.current.displayed_bars;
+    const liveBounds = liveBars.length > 0
+      ? {
+          first: chartTime(liveBars[0].timestamp),
+          last: chartTime(liveBars.at(-1)!.timestamp),
+        }
+      : null;
+    const restoredRange = captured && liveBounds
+      ? intersectTimeRangeWithBarBounds(captured, liveBounds)
+      : null;
+    if (preFocusAtLatest.current || !restoredRange) {
+      // A latest-pinned, missing, invalid, or aged-out viewport returns to
+      // the current live edge rather than zooming stale or unavailable bars.
+      instance.timeScale().scrollToRealTime();
     } else {
-      instance.timeScale().fitContent();
+      instance.timeScale().setVisibleRange({
+        from: restoredRange.from as UTCTimestamp,
+        to: restoredRange.to as UTCTimestamp,
+      });
     }
+    preFocusRange.current = null;
   }, [focus]);
 
   return (
@@ -262,9 +326,9 @@ export function ReplayChart({ replay, precision, focus, onClearFocus }: {
           className="chart-focus-reset"
           type="button"
           onClick={onClearFocus}
-          aria-label="Return chart to the latest replay area"
+          aria-label="Return to live chart"
         >
-          Back to latest
+          Return to live chart
         </button>
       )}
     </div>

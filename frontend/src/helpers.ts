@@ -1,4 +1,4 @@
-import type { TradeDirection } from "./types";
+import type { Fill, Trade, TradeDirection } from "./types";
 
 const DATE_TIME_LOCAL_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?$/;
 
@@ -34,9 +34,40 @@ export function validateReplayRange(
   return null;
 }
 
+/** The quantity controls are string-backed so empty and incomplete decimal
+ * drafts (`""`, `.`, `0.`, `1.`) survive editing; the draft is parsed only
+ * when the user acts on it. */
+const DECIMAL_NUMBER = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
+
+export function parsePositiveQuantity(raw: string): number | null {
+  const trimmed = raw.trim();
+  if (!DECIMAL_NUMBER.test(trimmed)) return null;
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return parsed;
+}
+
+/** Render a persisted finite quantity without grouping or precision loss. */
+export function quantityDraft(value: number): string {
+  return Number.isFinite(value) ? String(value) : "";
+}
+
+function quantityUlp(value: number): number {
+  const magnitude = Math.abs(value);
+  if (magnitude < 2 ** -1022) return Number.MIN_VALUE;
+  return 2 ** (Math.floor(Math.log2(magnitude)) - 52);
+}
+
+/** Mirror the backend's ULP-scaled oversize distinction for immediate ticket
+ * feedback. The server remains authoritative and canonicalizes the result. */
+export function closeQuantityExceedsRemainder(requested: number, remaining: number): boolean {
+  const tolerance = 256 * Math.max(quantityUlp(requested), quantityUlp(remaining));
+  return requested - remaining > tolerance;
+}
+
 export type OrderTicketValues = {
   direction: TradeDirection;
-  quantity: number;
+  quantity: string;
   stop: string;
   target: string;
   currentPrice: number | null;
@@ -47,8 +78,16 @@ export function validateOrderTicket(values: OrderTicketValues): string | null {
   if (!values.canEnter || values.currentPrice === null || !Number.isFinite(values.currentPrice)) {
     return "A causal market price is required before placing an order.";
   }
-  if (!Number.isFinite(values.quantity) || values.quantity <= 0) {
-    return "Quantity must be greater than zero.";
+  const quantityText = values.quantity.trim();
+  if (quantityText === "") {
+    return "Enter a quantity greater than zero.";
+  }
+  const quantity = parsePositiveQuantity(quantityText);
+  if (quantity === null) {
+    if (DECIMAL_NUMBER.test(quantityText) && Number(quantityText) <= 0) {
+      return "Quantity must be greater than zero.";
+    }
+    return "Quantity must be a finite decimal number greater than zero.";
   }
 
   const stop = values.stop.trim() === "" ? null : Number(values.stop);
@@ -99,9 +138,10 @@ export function formatNumber(value: number | null | undefined, fractionDigits = 
 
 export function formatAdaptiveNumber(value: number | null | undefined): string {
   if (value === null || value === undefined || !Number.isFinite(value)) return "—";
+  if (value !== 0 && Math.abs(value) < 1e-20) return String(value);
   return value.toLocaleString(undefined, {
     minimumFractionDigits: 0,
-    maximumFractionDigits: 8,
+    maximumFractionDigits: 20,
   });
 }
 
@@ -119,6 +159,145 @@ export function isTimestampWithinRange(
     && Number.isFinite(last)
     && first <= value
     && value <= last;
+}
+
+/** Stable identity for every chart-history setting that changes the returned
+ * bars or overlays. Indicator order is not semantically significant. */
+export function focusSettingsSignature(
+  visibleTimeframe: string,
+  enabledIndicators: readonly string[],
+): string {
+  return JSON.stringify([visibleTimeframe, [...enabledIndicators].sort()]);
+}
+
+/** A chart-history response is installable only for the focus request and
+ * settings that are still current when it settles. */
+export function focusRequestIsCurrent(
+  requestGeneration: number,
+  requestSettingsSignature: string,
+  currentGeneration: number,
+  currentSettingsSignature: string,
+): boolean {
+  return requestGeneration === currentGeneration
+    && requestSettingsSignature === currentSettingsSignature;
+}
+
+/** Whether a focused trade's entry-to-exit span still lies inside the live
+ * chart payload's revealed bar bounds. A live-window focus needs no server
+ * fetch while this holds; once the replay slides the trade out, a bounded
+ * window must be fetched instead. */
+export function focusWithinLiveBounds(
+  fromTimestamp: string,
+  toTimestamp: string,
+
+  firstBarTimestamp: string | undefined,
+  lastBarTimestamp: string | undefined,
+): boolean {
+  if (!firstBarTimestamp || !lastBarTimestamp) return false;
+  return Date.parse(fromTimestamp) >= Date.parse(firstBarTimestamp)
+    && Date.parse(toTimestamp) <= Date.parse(lastBarTimestamp);
+}
+
+export function tradeFocusEnd(
+  trade: Pick<Trade, "id" | "entry_source_candle_time" | "entry_time" | "exit_time">,
+  fills: Pick<Fill, "trade_id" | "reason" | "source_candle_time" | "timestamp">[],
+): string {
+  for (let index = fills.length - 1; index >= 0; index -= 1) {
+    const fill = fills[index];
+    if (fill.trade_id === trade.id && fill.reason !== "entry") {
+      return fill.source_candle_time ?? fill.timestamp;
+    }
+  }
+  return trade.exit_time ?? trade.entry_source_candle_time ?? trade.entry_time;
+}
+
+export type BarTimeBounds = { first: number; last: number };
+
+/** Clamp a captured epoch-second viewport to the live bars that still
+ * exist. Lightweight Charts may also return non-numeric time values, which
+ * cannot be restored against epoch-second bar bounds. */
+export function intersectTimeRangeWithBarBounds(
+  range: { from: unknown; to: unknown },
+  barBounds: BarTimeBounds,
+): { from: number; to: number } | null {
+  if (typeof range.from !== "number"
+    || typeof range.to !== "number"
+    || !Number.isFinite(range.from)
+    || !Number.isFinite(range.to)
+    || !Number.isFinite(barBounds.first)
+    || !Number.isFinite(barBounds.last)
+    || range.from > range.to
+    || barBounds.first > barBounds.last
+  ) return null;
+  const from = Math.max(range.from, barBounds.first);
+  const to = Math.min(range.to, barBounds.last);
+  return from < to ? { from, to } : null;
+}
+
+/** Derive the visible range for a focused trade. With a bounded server
+ * window the viewport is clamped to the returned bar bounds — the trade's
+ * full span may reach beyond the window (truncated trades, causal clamps),
+ * and the viewport must never show unavailable bars. Without bounds (a live
+ * zoom) the trade span plus a margin is used as before. */
+export function clampFocusViewport(
+  tradeFrom: number,
+  tradeTo: number,
+  barBounds: BarTimeBounds | null,
+): { from: number; to: number } {
+  let from = tradeFrom;
+  let to = tradeTo;
+  if (barBounds) {
+    from = Math.max(from, barBounds.first);
+    to = Math.min(to, barBounds.last);
+    if (to < from) {
+      // The trade's span does not intersect the returned window at all:
+      // show the window itself instead of an empty viewport.
+      return { from: barBounds.first, to: barBounds.last };
+    }
+  }
+  const span = Math.max(to - from, 60);
+  let margin = Math.max(span * 0.1, 300);
+  if (barBounds) {
+    margin = Math.max(Math.min(margin, from - barBounds.first, barBounds.last - to), 0);
+    return {
+      from: Math.max(from - margin, barBounds.first),
+      to: Math.min(to + margin, barBounds.last),
+    };
+  }
+  return { from: from - margin, to: to + margin };
+}
+
+/** Standard step-size choices offered by the step-size control. */
+export const REPLAY_STEP_SIZES = [1, 2, 3, 5, 10, 15];
+
+/** The step-size select options. A persisted step size outside the standard
+ * list (e.g. an older session) is kept selectable instead of rendering a
+ * blank control. */
+export function stepSizeOptions(persistedStepMinutes: number): number[] {
+  if (Number.isInteger(persistedStepMinutes) && persistedStepMinutes > 0
+    && !REPLAY_STEP_SIZES.includes(persistedStepMinutes)) {
+    return [...REPLAY_STEP_SIZES, persistedStepMinutes].sort((left, right) => left - right);
+  }
+  return REPLAY_STEP_SIZES;
+}
+
+
+/** Transport shortcuts are suppressed while a mutation is busy and once the
+ * replay is completed; Space also always consumes the key so the page does
+ * not scroll. */
+export function canActShortcut(busy: boolean, status: string): boolean {
+  return !busy && status !== "completed";
+}
+
+/** A keydown whose target is an editable control is left alone so typing in
+ * quantity/price fields never triggers a replay shortcut. */
+export function isEditableKeyboardTarget(
+  target: { isContentEditable?: boolean; tagName?: string } | null,
+): boolean {
+  if (!target) return false;
+  if (target.isContentEditable) return true;
+  const tag = target.tagName?.toUpperCase();
+  return tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA" || tag === "BUTTON";
 }
 
 const INTEGER_STATISTICS: Record<string, true> = {
@@ -204,7 +383,8 @@ export function formatDuration(totalSeconds: number): string {
   return parts.join(" ");
 }
 
-export function formatStatistic(name: string, value: number, currency: string): string {
+export function formatStatistic(name: string, value: number | null, currency: string): string {
+  if (value === null || !Number.isFinite(value)) return "—";
   if (INTEGER_STATISTICS[name]) return formatNumber(value, 0);
   if (name === "win_rate") return `${formatNumber(value)}%`;
   if (name === "average_holding_seconds") return formatDuration(value);

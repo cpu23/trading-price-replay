@@ -411,13 +411,17 @@ def test_chart_history_focus_is_clamped_to_the_revealed_candle(client):
         assert first <= parse(fill["source_candle_time"]) <= last
 
 
-def test_chart_history_does_not_materialize_the_full_range(client, monkeypatch):
-    """The focus endpoint reads through the paged RangeBars view; the
-    materialized full-range read (load_bars_range) is no longer on the path."""
-    def boom(*args, **kwargs):
-        raise AssertionError("chart history must not materialize the full range")
+def test_chart_history_reads_through_bounded_pages(client, monkeypatch):
+    """The focus endpoint decodes bounded RangeBars pages, never an unbounded
+    materialized session range."""
+    page_lengths = []
+    real_load_page = market_data.load_bars_page
 
-    monkeypatch.setattr("app.service.load_bars_range", boom)
+    def track_page(path, year, file_offset, length):
+        page_lengths.append(length)
+        return real_load_page(path, year, file_offset, length)
+
+    monkeypatch.setattr(market_data, "load_bars_page", track_page)
     session_id = create_session(client)["id"]
     assert client.post(f"/api/replay/sessions/{session_id}/step").status_code == 200
     opened = client.post(f"/api/replay/sessions/{session_id}/orders/market",
@@ -428,6 +432,8 @@ def test_chart_history_does_not_materialize_the_full_range(client, monkeypatch):
     response = client.get(f"/api/replay/sessions/{session_id}/trades/{trade_id}/chart-history")
     assert response.status_code == 200, response.text
     assert response.json()["displayed_bars"]
+    assert page_lengths
+    assert all(length <= market_data._BARS_PAGE_SIZE for length in page_lengths)
 
 
 def test_very_long_trade_focus_window_is_truncated(client, tmp_path):

@@ -1,3 +1,5 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 
@@ -9,6 +11,31 @@ const fixturePath = process.env.E2E_FIXTURE ?? "";
 const longFixturePath = fileURLToPath(
   new URL("../../backend/tests/fixtures/dukascopy_1m_700.csv", import.meta.url),
 );
+const backendDir = fileURLToPath(new URL("../../backend/", import.meta.url));
+const execFileAsync = promisify(execFile);
+
+type SeedSummary = {
+  closed_trades: number;
+  fills: number;
+  closed_trades_total: number;
+  fills_total: number;
+};
+
+async function seedLargeHistory(targetSessionId: string): Promise<SeedSummary> {
+  const dataRoot = process.env.PRICE_REPLAY_DATA_ROOT;
+  if (!dataRoot) throw new Error("PRICE_REPLAY_DATA_ROOT is required for isolated E2E seeding");
+  const { stdout } = await execFileAsync(
+    "uv",
+    ["run", "python", "-m", "scripts.seed_e2e_history", "--session-id", targetSessionId],
+    {
+      cwd: backendDir,
+      encoding: "utf8",
+      env: { ...process.env, PRICE_REPLAY_DATA_ROOT: dataRoot },
+      timeout: 60_000,
+    },
+  );
+  return JSON.parse(stdout) as SeedSummary;
+}
 
 let sessionId: string;
 
@@ -88,6 +115,29 @@ test("replay steps reveal causal time and execute a full trade round-trip", asyn
   await expect(review.getByText("MAE (close)")).toBeVisible();
 });
 
+test("rejects a 50% close when the smallest quantity underflows to zero", async ({ page, request }) => {
+  await request.post(`/api/replay/sessions/${sessionId}/step`);
+  const order = await request.post(`/api/replay/sessions/${sessionId}/orders/market`, {
+    data: { direction: "long", quantity: Number.MIN_VALUE },
+  });
+  expect(order.status()).toBe(200);
+  await openWorkspace(page);
+
+  let closeRequests = 0;
+  await page.route("**/api/trades/*/close", async (route) => {
+    closeRequests += 1;
+    await route.abort();
+  });
+
+  const openTrade = page.getByLabel("Open trades").locator(".trade-row");
+  await openTrade.getByRole("button", { name: "50%" }).click();
+
+  await expect(openTrade.getByRole("alert")).toHaveText(
+    "Enter a finite close quantity greater than zero.",
+  );
+  expect(closeRequests).toBe(0);
+});
+
 test("persists review notes and tags across a reload", async ({ page, request }) => {
   await seedClosedTrade(request);
   await openWorkspace(page);
@@ -110,35 +160,34 @@ test("persists review notes and tags across a reload", async ({ page, request })
   await expect(reloaded.locator(".tag-chip", { hasText: "deterministic" })).toBeVisible();
 });
 
-test("focuses the chart on a closed trade and returns to the latest area", async ({ page, request }) => {
+test("focuses the chart on a closed trade and returns to the live chart", async ({ page, request }) => {
   await seedClosedTrade(request);
   await openWorkspace(page);
 
   const review = page.getByLabel("Closed trades").locator(".trade-review").first();
   await review.getByRole("button", { name: "Focus on chart" }).click();
 
-  const backToLatest = page.getByRole("button", { name: "Return chart to the latest replay area" });
-  await expect(backToLatest).toBeVisible();
+  const returnToLive = page.getByRole("button", { name: "Return to live chart" });
+  await expect(returnToLive).toBeVisible();
 
-  await backToLatest.click();
-  await expect(backToLatest).toBeHidden();
+  await returnToLive.click();
+  await expect(returnToLive).toBeHidden();
 });
 
 test("loads older closed-trade and fill history, then keeps stepping live", async ({ page, request }) => {
-  test.setTimeout(120_000);
-  // Seed 501 closed trades (1002 fills) at the first revealed price — past
-  // both first-page caps (200 closed trades / 1000 fills). Open every trade
-  // first, then close them in one mutation to keep CI setup bounded and cover
-  // the large close-all response path.
   await request.post(`/api/replay/sessions/${sessionId}/step`);
-  for (let i = 0; i < 501; i++) {
-    const opened = await request.post(`/api/replay/sessions/${sessionId}/orders/market`, {
-      data: { direction: "long", quantity: 1 },
-    });
-    expect(opened.status()).toBe(200);
-  }
-  const closed = await request.post(`/api/replay/sessions/${sessionId}/close-all`);
-  expect(closed.status()).toBe(200);
+  const seeded = await seedLargeHistory(sessionId);
+  expect(seeded).toMatchObject({
+    closed_trades: 501,
+    fills: 1002,
+    closed_trades_total: 501,
+    fills_total: 1002,
+  });
+  const bounded = await request.get(`/api/replay/sessions/${sessionId}/state`);
+  expect(bounded.status()).toBe(200);
+  const boundedState = await bounded.json();
+  expect(boundedState.trades).toHaveLength(200);
+  expect(boundedState.fills).toHaveLength(1000);
 
   await openWorkspace(page);
 
@@ -190,6 +239,10 @@ test("focuses a closed trade older than the live chart window via a bounded hist
       data: { direction: "long", quantity: 1 },
     });
     await request.post(`/api/replay/sessions/${longSessionId}/close-all`);
+    await request.post(`/api/replay/sessions/${longSessionId}/orders/market`, {
+      data: { direction: "long", quantity: 1 },
+    });
+    await request.post(`/api/replay/sessions/${longSessionId}/close-all`);
     for (let i = 0; i < 105; i++) {
       await request.post(`/api/replay/sessions/${longSessionId}/step`);
     }
@@ -198,15 +251,78 @@ test("focuses a closed trade older than the live chart window via a bounded hist
     await page.locator(".session-list li", { hasText: "E2E-LONG" }).getByRole("button", { name: "Resume" }).click();
     await page.getByRole("heading", { name: "Order ticket" }).waitFor();
 
-    const chartHistory = page.waitForResponse((res) => res.url().includes("/chart-history") && res.status() === 200);
-    const review = page.getByLabel("Closed trades").locator(".trade-review").first();
-    await review.getByRole("button", { name: "Focus on chart" }).click();
-    await chartHistory;
+    let requestNumber = 0;
+    let releaseFirst!: () => void;
+    let firstSeen!: () => void;
+    let firstSettled!: () => void;
+    const releaseFirstPromise = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const firstSeenPromise = new Promise<void>((resolve) => { firstSeen = resolve; });
+    const firstSettledPromise = new Promise<void>((resolve) => { firstSettled = resolve; });
+    let releaseFourth!: () => void;
+    let fourthSeen!: () => void;
+    let fourthSettled!: () => void;
+    const releaseFourthPromise = new Promise<void>((resolve) => { releaseFourth = resolve; });
+    const fourthSeenPromise = new Promise<void>((resolve) => { fourthSeen = resolve; });
+    const fourthSettledPromise = new Promise<void>((resolve) => { fourthSettled = resolve; });
+    await page.route("**/chart-history*", async (route) => {
+      requestNumber += 1;
+      if (requestNumber === 1) {
+        firstSeen();
+        await releaseFirstPromise;
+        await route.abort("failed");
+        firstSettled();
+        return;
+      }
+      if (requestNumber === 3) {
+        await route.abort("failed");
+        return;
+      }
+      if (requestNumber === 4) {
+        fourthSeen();
+        await releaseFourthPromise;
+        const response = await route.fetch();
+        const body = await response.json();
+        await route.fulfill({ response, json: { ...body, truncated: true } });
+        fourthSettled();
+        return;
+      }
+      await route.continue();
+    });
 
-    const backToLatest = page.getByRole("button", { name: "Return chart to the latest replay area" });
-    await expect(backToLatest).toBeVisible();
-    await backToLatest.click();
-    await expect(backToLatest).toBeHidden();
+    const focusButtons = page.getByLabel("Closed trades").getByRole("button", { name: "Focus on chart" });
+    await expect(focusButtons).toHaveCount(2);
+    const returnToLive = page.getByRole("button", { name: "Return to live chart" });
+
+    // A delayed failure for trade A cannot replace a successful newer focus B.
+    await focusButtons.nth(0).click();
+    await firstSeenPromise;
+    const newerFocus = page.waitForResponse((res) => (
+      res.url().includes("/chart-history") && res.status() === 200
+    ));
+    await focusButtons.nth(1).click();
+    await newerFocus;
+    releaseFirst();
+    await firstSettledPromise;
+    await expect(page.getByText("Could not load the historical chart window")).toBeHidden();
+    await expect(returnToLive).toBeVisible();
+    await returnToLive.click();
+    await expect(returnToLive).toBeHidden();
+
+    // Current failures stay visible and selected; retry shows loading and the
+    // bounded-window disclosure once the successful response arrives.
+    await focusButtons.nth(0).click();
+    await expect(page.getByText("Could not load the historical chart window")).toBeVisible();
+    await focusButtons.nth(0).click();
+    await fourthSeenPromise;
+    await expect(page.getByText("Loading the historical chart window")).toBeVisible();
+    releaseFourth();
+    await fourthSettledPromise;
+    await expect(page.getByText("Loading the historical chart window")).toBeHidden();
+    await expect(page.getByText("Could not load the historical chart window")).toBeHidden();
+    await expect(page.getByText("This trade's chart window is bounded")).toBeVisible();
+    await expect(returnToLive).toBeVisible();
+    await returnToLive.click();
+    await expect(returnToLive).toBeHidden();
   } finally {
     await request.delete(`/api/replay/sessions/${longSessionId}`);
   }

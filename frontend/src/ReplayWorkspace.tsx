@@ -1,21 +1,20 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import { ReplayChart } from "./Chart";
-import { formatAdaptiveNumber, formatExecutionTime, formatMetricLabel, formatNumber, formatPrice, formatStatistic, historyCountLabel, replayProgress, utcClock, utcDateTime, validateOrderTicket } from "./helpers";
+import { canActShortcut, focusRequestIsCurrent, focusSettingsSignature, focusWithinLiveBounds, formatAdaptiveNumber, formatExecutionTime, formatMetricLabel, formatNumber, formatPrice, formatStatistic, historyCountLabel, isEditableKeyboardTarget, parsePositiveQuantity, replayProgress, stepSizeOptions, tradeFocusEnd, utcClock, utcDateTime, validateOrderTicket } from "./helpers";
 import { TradeRow } from "./TradeRow";
 import { TradeReview } from "./TradeReview";
 import { useReplayStore } from "./store";
 import type { ChartHistoryResponse, Fill, ReplaySnapshot, ReplayStats, Timeframe, Trade, TradeDirection } from "./types";
 
 const TIMEFRAMES: Timeframe[] = ["1m", "5m", "15m", "1h", "4h", "1d"];
-const STEP_SIZES = [1, 2, 3, 5, 10, 15];
 const PLAYBACK_SPEEDS = [
   { label: "0.5×", delay: 2000 },
   { label: "1×", delay: 1000 },
   { label: "2×", delay: 500 },
   { label: "4×", delay: 250 },
 ];
-const PRIMARY_STATS: (keyof ReplayStats)[] = [
+const PRIMARY_STATS = [
   "balance",
   "equity",
   "net_pnl",
@@ -25,7 +24,8 @@ const PRIMARY_STATS: (keyof ReplayStats)[] = [
   "commission_paid",
   "spread_cost",
   "slippage_cost",
-];
+] as const satisfies readonly (keyof ReplayStats)[];
+const PRIMARY_STATS_SET = new Set<keyof ReplayStats>(PRIMARY_STATS);
 
 export function ReplayWorkspace() {
   const replay = useReplayStore((state) => state.replay);
@@ -47,13 +47,25 @@ function ReplayWorkspaceContent({ replay }: { replay: ReplaySnapshot }) {
   const loadOlderTrades = useReplayStore((state) => state.loadOlderTrades);
   const loadOlderFills = useReplayStore((state) => state.loadOlderFills);
 
-  const [quantity, setQuantity] = useState(1);
+  const [quantity, setQuantity] = useState("1");
   const [stop, setStop] = useState("");
   const [target, setTarget] = useState("");
   const [ticketError, setTicketError] = useState("");
   const [playbackDelay, setPlaybackDelay] = useState(1000);
   const [confirmCloseAll, setConfirmCloseAll] = useState(false);
-  const [chartFocus, setChartFocus] = useState<{ trade: Trade; window: ChartHistoryResponse | null } | null>(null);
+
+  // A focused trade shows either a live zoom (no window) or a bounded
+  // historical window fetched from the server. The status drives the visible
+  // loading/failure state; `window.truncated` marks a window bounded to the
+  // trade's earliest bars.
+  const [chartFocus, setChartFocus] = useState<{
+    trade: Trade;
+    window: ChartHistoryResponse | null;
+    status: "live" | "loading" | "ready" | "error";
+  } | null>(null);
+  // Monotonic token for focus fetches: only the newest request made for the
+  // current chart settings may install a window or visible failure.
+  const focusGeneration = useRef(0);
 
   const metadata = symbols.find((item) => item.symbol === replay.symbol);
   // Formatting follows the session's pinned snapshot; legacy sessions fall back
@@ -101,9 +113,17 @@ function ReplayWorkspaceContent({ replay }: { replay: ReplaySnapshot }) {
       return;
     }
     setTicketError("");
+    // The draft is parsed only on action; the validator guarantees a finite
+    // positive parse (backend semantics: finite float, strictly greater than
+    // zero, any legitimate tiny value accepted).
+    const parsedQuantity = parsePositiveQuantity(quantity);
+    if (parsedQuantity === null) {
+      setTicketError("Enter a quantity greater than zero.");
+      return;
+    }
     await action(() => api.placeMarketOrder(replay.id, {
       direction,
-      quantity,
+      quantity: parsedQuantity,
       stop_price: stop.trim() ? Number(stop) : null,
       target_price: target.trim() ? Number(target) : null,
     }));
@@ -122,19 +142,16 @@ function ReplayWorkspaceContent({ replay }: { replay: ReplaySnapshot }) {
   useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {
       if (event.repeat) return;
-      const targetElement = event.target;
-      if (targetElement instanceof HTMLElement && (
-        targetElement.isContentEditable
-        || ["INPUT", "SELECT", "TEXTAREA", "BUTTON"].includes(targetElement.tagName)
-      )) return;
+      // Typing suppression: shortcuts never fire from editable controls.
+      if (isEditableKeyboardTarget(event.target as HTMLElement | null)) return;
 
       if (event.code === "Space") {
         event.preventDefault();
-        if (!busy && replay.status !== "completed") setPlaying(!playing);
+        if (canActShortcut(busy, replay.status)) setPlaying(!playing);
         return;
       }
-      if (busy) return;
-      if (event.code === "ArrowRight" && replay.status !== "completed") {
+      if (!canActShortcut(busy, replay.status)) return;
+      if (event.code === "ArrowRight") {
         event.preventDefault();
         void step();
       } else if (event.key.toLowerCase() === "b") {
@@ -148,42 +165,109 @@ function ReplayWorkspaceContent({ replay }: { replay: ReplaySnapshot }) {
   }, [busy, placeOrder, playing, replay.status, setPlaying, step]);
 
   const displayedStats = useMemo(() => {
-    const primary = PRIMARY_STATS
-      .filter((name) => typeof replay.stats[name] === "number")
-      .map((name) => [name, replay.stats[name]] as const);
+    const primary = PRIMARY_STATS.map((name) => [name, replay.stats[name]] as const);
     const secondary = Object.entries(replay.stats)
-      .filter(([name]) => !PRIMARY_STATS.includes(name as keyof ReplayStats))
+      .filter(([name]) => !PRIMARY_STATS_SET.has(name as keyof ReplayStats))
       .sort(([left], [right]) => left.localeCompare(right));
     return { primary, secondary };
   }, [replay.stats]);
+
+  // Keep the chart focus identity stable across clock-only replay renders and
+  // loading/error status changes; chart data effects key off this object.
+  const chartFocusTarget = useMemo(() => chartFocus ? {
+    from: chartFocus.trade.entry_source_candle_time ?? chartFocus.trade.entry_time,
+    to: tradeFocusEnd(chartFocus.trade, chartFocus.window?.fills ?? replay.fills),
+    window: chartFocus.window || undefined,
+  } : null, [chartFocus?.trade, chartFocus?.window, replay.fills]);
 
   async function closeAll() {
     setConfirmCloseAll(false);
     await action(() => api.closeAll(replay.id));
   }
 
+  const currentFocusSettings = useMemo(
+    () => focusSettingsSignature(replay.visible_timeframe, replay.enabled_indicators),
+    [replay.enabled_indicators, replay.visible_timeframe],
+  );
   const replayRef = useRef(replay);
-  useEffect(() => { replayRef.current = replay; }, [replay]);
+  const focusSettingsRef = useRef(currentFocusSettings);
+  useLayoutEffect(() => {
+    // Commit the matching replay payload and signature before a delayed
+    // request can settle against newly rendered controls.
+    replayRef.current = replay;
+    focusSettingsRef.current = currentFocusSettings;
+  }, [currentFocusSettings, replay]);
+  const previousFocusSettings = useRef(currentFocusSettings);
 
   const handleFocus = useCallback(async (trade: Trade) => {
     // A trade inside the live window zooms the existing chart payload; an
     // older trade needs a bounded historical window fetched from the server.
     const current = replayRef.current;
-    const first = current.displayed_bars[0]?.timestamp;
-    const last = current.displayed_bars.at(-1)?.timestamp;
+    const requestSettingsSignature = focusSettingsRef.current;
     const from = trade.entry_source_candle_time ?? trade.entry_time;
-    const to = trade.exit_time ?? from;
-    setChartFocus({ trade, window: null });
-    if (first !== undefined && last !== undefined && from >= first && to <= last) return;
+    const to = tradeFocusEnd(trade, current.fills);
+    const generation = ++focusGeneration.current;
+    if (focusWithinLiveBounds(
+      from,
+      to,
+      current.displayed_bars[0]?.timestamp,
+      current.displayed_bars.at(-1)?.timestamp,
+    )) {
+      setChartFocus({ trade, window: null, status: "live" });
+      return;
+    }
+    setChartFocus({ trade, window: null, status: "loading" });
     try {
       const windowResponse = await api.getChartHistory(current.id, trade.id);
+      // A→B cannot install A, and a settings response cannot install after
+      // its timeframe or enabled indicators have changed.
+      if (!focusRequestIsCurrent(
+        generation,
+        requestSettingsSignature,
+        focusGeneration.current,
+        focusSettingsRef.current,
+      )) return;
       setChartFocus((prev) => (prev && prev.trade.id === trade.id
-        ? { trade, window: windowResponse }
+        ? { trade, window: windowResponse, status: "ready" }
         : prev));
     } catch {
-      setChartFocus(null);
+      // A stale failure must never affect a newer selection or settings
+      // request; the current selection keeps a visible failure otherwise.
+      if (!focusRequestIsCurrent(
+        generation,
+        requestSettingsSignature,
+        focusGeneration.current,
+        focusSettingsRef.current,
+      )) return;
+      setChartFocus((prev) => (prev && prev.trade.id === trade.id
+        ? { trade, window: null, status: "error" }
+        : prev));
     }
   }, []);
+
+  // Reclassify the same focused trade whenever chart settings change. Live
+  // focus also follows the revealed payload and becomes a bounded request
+  // once advancing the replay moves its trade outside the live bars.
+  useLayoutEffect(() => {
+    const settingsChanged = previousFocusSettings.current !== currentFocusSettings;
+    previousFocusSettings.current = currentFocusSettings;
+    if (!chartFocus) return;
+    if (settingsChanged) {
+      void handleFocus(chartFocus.trade);
+      return;
+    }
+    if (chartFocus.window !== null || chartFocus.status !== "live") return;
+    const current = replayRef.current;
+    const from = chartFocus.trade.entry_source_candle_time ?? chartFocus.trade.entry_time;
+    const to = tradeFocusEnd(chartFocus.trade, current.fills);
+    if (focusWithinLiveBounds(
+      from,
+      to,
+      current.displayed_bars[0]?.timestamp,
+      current.displayed_bars.at(-1)?.timestamp,
+    )) return;
+    void handleFocus(chartFocus.trade);
+  }, [chartFocus, currentFocusSettings, handleFocus, replay.displayed_bars]);
 
   return (
     <main className="app workspace">
@@ -213,8 +297,8 @@ function ReplayWorkspaceContent({ replay }: { replay: ReplaySnapshot }) {
         <button className="button-quiet leave-button" type="button" onClick={leave}>Leave replay</button>
       </header>
 
-      <div className="replay-progress" aria-label={`${progress.toFixed(0)} percent of replay revealed`}>
-        <progress max="100" value={progress}>{progress.toFixed(0)}%</progress>
+      <div className="replay-progress">
+        <progress max="100" value={progress} aria-label={`${progress.toFixed(0)} percent of replay revealed`}>{progress.toFixed(0)}%</progress>
       </div>
 
       <section className="control-bar" aria-label="Replay controls">
@@ -240,7 +324,7 @@ function ReplayWorkspaceContent({ replay }: { replay: ReplaySnapshot }) {
             disabled={busy || replay.status === "completed"}
             onChange={(event) => void action(() => api.updateSettings(replay.id, { advance_step_minutes: Number(event.target.value) }))}
           >
-            {STEP_SIZES.map((minutes) => <option key={minutes} value={minutes}>{minutes} min</option>)}
+            {stepSizeOptions(replay.advance_step_minutes).map((minutes) => <option key={minutes} value={minutes}>{minutes} min</option>)}
           </select>
         </div>
         <div className="control-field">
@@ -255,10 +339,17 @@ function ReplayWorkspaceContent({ replay }: { replay: ReplaySnapshot }) {
             onClick={() => setPlaying(!playing)}
             disabled={replay.status === "completed" || (busy && !playing)}
             aria-label={playing ? "Pause replay" : "Play replay"}
+            aria-keyshortcuts="Space"
           >
             {playing ? "Pause" : "Play"}
           </button>
-          <button className="button-primary" type="button" onClick={() => void step()} disabled={busy || replay.status === "completed"}>
+          <button
+            className="button-primary"
+            type="button"
+            onClick={() => void step()}
+            disabled={busy || replay.status === "completed"}
+            aria-keyshortcuts="ArrowRight"
+          >
             {busy ? "Working…" : "Step"}
           </button>
         </div>
@@ -281,13 +372,26 @@ function ReplayWorkspaceContent({ replay }: { replay: ReplaySnapshot }) {
       <ReplayChart
         replay={replay}
         precision={precision}
-        focus={chartFocus ? {
-          from: chartFocus.trade.entry_source_candle_time ?? chartFocus.trade.entry_time,
-          to: chartFocus.trade.exit_time ?? chartFocus.trade.entry_source_candle_time ?? chartFocus.trade.entry_time,
-          window: chartFocus.window || undefined,
-        } : null}
-        onClearFocus={() => setChartFocus(null)}
+        focus={chartFocusTarget}
+        onClearFocus={() => {
+          focusGeneration.current += 1;
+          setChartFocus(null);
+        }}
       />
+      {chartFocus?.status === "loading" && (
+        <p className="focus-status" role="status">Loading the historical chart window…</p>
+      )}
+      {chartFocus?.status === "error" && (
+        <p className="focus-status focus-status-error" role="alert">
+          Could not load the historical chart window for this trade; the focus stays selected.
+          Use Return to live chart to leave historical focus.
+        </p>
+      )}
+      {chartFocus?.window?.truncated && (
+        <p className="focus-status" role="status">
+          This trade's chart window is bounded: it spans more bars than the window can hold, so only its earliest bars are shown.
+        </p>
+      )}
 
       <section className="cost-strip" aria-label="Execution configuration">
         <div><span>Initial balance</span><strong>{formatNumber(replay.initial_balance)} {replay.account_currency}</strong></div>
@@ -310,7 +414,7 @@ function ReplayWorkspaceContent({ replay }: { replay: ReplaySnapshot }) {
           )}
           <div className="field-group">
             <label htmlFor="order-quantity">Quantity</label>
-            <input id="order-quantity" type="number" min="0.00000001" step="any" value={quantity} onChange={(event) => setQuantity(Number(event.target.value))} />
+            <input id="order-quantity" type="text" inputMode="decimal" value={quantity} onChange={(event) => setQuantity(event.target.value)} />
           </div>
           <div className="protection-grid">
             <div className="field-group">
@@ -324,8 +428,8 @@ function ReplayWorkspaceContent({ replay }: { replay: ReplaySnapshot }) {
           </div>
           {ticketError && <p className="inline-message message-error" role="alert">{ticketError}</p>}
           <div className="order-buttons">
-            <button className="button-buy" type="button" onClick={() => void placeOrder("long")} disabled={busy || !canEnter}>Buy / Long</button>
-            <button className="button-sell" type="button" onClick={() => void placeOrder("short")} disabled={busy || !canEnter}>Sell / Short</button>
+            <button className="button-buy" type="button" onClick={() => void placeOrder("long")} disabled={busy || !canEnter} aria-keyshortcuts="B">Buy / Long</button>
+            <button className="button-sell" type="button" onClick={() => void placeOrder("short")} disabled={busy || !canEnter} aria-keyshortcuts="S">Sell / Short</button>
           </div>
         </section>
 

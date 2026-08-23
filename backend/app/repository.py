@@ -6,7 +6,6 @@ import sqlite3
 from collections import OrderedDict
 from dataclasses import fields
 from datetime import datetime, timezone
-from pathlib import Path
 
 from .config import DB_PATH, ensure_directories
 from .domain import Fill, ReplayState, Trade, serializable, state_snapshot
@@ -388,10 +387,10 @@ def list_trades(session_id: str, status: str | None, limit: int,
             tuple(params),
         ).fetchall()
         total = db.execute(
-            f"SELECT COUNT(*) FROM trades WHERE session_id=? AND status='closed'", (session_id,)
+            "SELECT COUNT(*) FROM trades WHERE session_id=? AND status='closed'", (session_id,)
         ).fetchone()[0] if status == "closed" else (
             db.execute(
-                f"SELECT COUNT(*) FROM trades WHERE session_id=? AND status='open'", (session_id,)
+                "SELECT COUNT(*) FROM trades WHERE session_id=? AND status='open'", (session_id,)
             ).fetchone()[0] if status == "open" else
             db.execute("SELECT COUNT(*) FROM trades WHERE session_id=?", (session_id,)).fetchone()[0]
         )

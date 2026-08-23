@@ -6,7 +6,7 @@ A local-first, candle-close market replay workstation. It imports canonical one-
 
 ```bash
 cd backend
-uv sync --dev
+uv sync --python 3.12 --locked --dev
 uv run uvicorn app.main:app --reload
 ```
 
@@ -14,7 +14,7 @@ In another terminal:
 
 ```bash
 cd frontend
-npm install
+npm ci
 npm run dev
 ```
 
@@ -40,9 +40,10 @@ Date,Time,Open,High,Low,Close,TickVolume,Volume,Spread
 - UTC-aligned and DST-aware New York-close-aligned higher timeframes.
 - Configurable, bounded 500-2,000 bar chart context with causal SMA 35.
 - Server-authoritative replay with arbitrary positive step sizes and resumable session history.
-- Independent and opposing long/short trades, editable stops and targets, partial exits, and close-all.
+- Independent and opposing long/short trades, editable stops and targets, decimal-safe partial exits, and close-all.
 - Configurable spread, slippage, per-side commission, and account balance.
-- Cost-aware fill ledger, realized and unrealized P&L, equity, drawdown, R multiples, and trade statistics.
+- Cost-aware fill ledger, realized and unrealized P&L, equity, drawdown, R multiples, and statistically honest nullable averages/ratios.
+- Bounded recent state with paginated complete trade/fill history, bounded historical chart focus, visible truncation/errors, and resumable review notes/tags.
 - Versioned, transactional SQLite schema migrations, WAL snapshots, indexed session history, and immutable market-data versions.
 
 ## Execution model
@@ -56,6 +57,10 @@ Stops and targets are evaluated sequentially for every revealed one-minute candl
 An opening gap through a level fills at the candle open. If both levels are touched
 later in the same candle and their ordering is unknowable, the stop wins
 conservatively.
+
+All close entry points use one quantity policy. Decimal user-visible remainders such as `0.3 - 0.1 = 0.2` close without binary-float dust; only non-material representational residue is canonicalized. Legitimate tiny quantities stay open, materially oversized closes remain errors, and the final fill books the actual stored remainder.
+
+Statistics distinguish zero activity from unavailable evidence. Counts and totals are zero when empty; ratios and averages render as unavailable when their denominator has no observations. `profit_factor` is unavailable without gross losing P&L, and R averages exclude trades without defined finite initial risk.
 
 The API documentation is available at `http://localhost:8000/docs`.
 
@@ -89,13 +94,24 @@ The standalone, multi-instrument downloader is documented in
 It exports raw ticks or audited `M1`, `H1`, and `D1` candle CSVs. Prefer `M1`
 exports for Price Replay imports; the application derives higher timeframes.
 
-## Tests
+## Verification
 
-From the repository root:
+Install the locked environments and browser once:
 
 ```bash
-make test
+cd backend && uv sync --python 3.12 --locked --dev && cd ..
+cd frontend && npm ci && npx playwright install chromium && cd ..
+cd tools/dukascopy_downloader && uv sync --python 3.12 --locked --dev && cd ../..
 ```
 
-This runs the backend and downloader Pytest suites, the frontend Vitest suite, and
-the production TypeScript/Vite build.
+From the repository root, run the complete local gate:
+
+```bash
+make verify
+```
+
+`make verify` runs restrained Ruff correctness linting, both Python suites, frontend Vitest and production TypeScript/Vite builds, OpenAPI/frontend-type regeneration with a drift check, the high-severity npm audit, and isolated Playwright E2E tests. `make test` omits lint, generated-contract drift, dependency audit, and browser tests.
+
+The E2E runner creates an ephemeral backend data root and deterministic fixtures; it never uses the normal session database. CI retains browser traces, failure screenshots, and a JSON report as the `playwright-diagnostics` artifact when a browser test fails.
+
+Design guarantees and measurement decisions are documented in [`docs/architecture.md`](docs/architecture.md), [`docs/performance.md`](docs/performance.md), and [`docs/research/manual-replay-market-review.md`](docs/research/manual-replay-market-review.md).

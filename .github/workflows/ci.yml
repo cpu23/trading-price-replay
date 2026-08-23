@@ -23,6 +23,7 @@ jobs:
           cache-dependency-glob: backend/uv.lock
       - run: uv python install 3.12
       - run: uv sync --locked --dev
+      - run: uv run ruff check .
       - run: uv run pytest
       - name: Check committed OpenAPI schema matches the code
         run: |
@@ -76,6 +77,14 @@ jobs:
         run: npm run test:e2e
         env:
           CI: "true"
+      - name: Upload Playwright diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-diagnostics
+          path: frontend/test-results
+          if-no-files-found: ignore
+          retention-days: 7
 
   downloader:
     name: Downloader tests
