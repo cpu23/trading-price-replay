@@ -35,7 +35,7 @@ export function TradeRow({ trade, replay, precision, busy, action }: TradeRowPro
   }, [trade.stop_price, trade.target_price]);
 
   async function closeTrade(quantity: number | null) {
-    if (quantity === null) {
+    if (quantity === null || !Number.isFinite(quantity) || quantity <= 0) {
       setValidationError("Enter a finite close quantity greater than zero.");
       return;
     }

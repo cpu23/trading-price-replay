@@ -115,6 +115,29 @@ test("replay steps reveal causal time and execute a full trade round-trip", asyn
   await expect(review.getByText("MAE (close)")).toBeVisible();
 });
 
+test("rejects a 50% close when the smallest quantity underflows to zero", async ({ page, request }) => {
+  await request.post(`/api/replay/sessions/${sessionId}/step`);
+  const order = await request.post(`/api/replay/sessions/${sessionId}/orders/market`, {
+    data: { direction: "long", quantity: Number.MIN_VALUE },
+  });
+  expect(order.status()).toBe(200);
+  await openWorkspace(page);
+
+  let closeRequests = 0;
+  await page.route("**/api/trades/*/close", async (route) => {
+    closeRequests += 1;
+    await route.abort();
+  });
+
+  const openTrade = page.getByLabel("Open trades").locator(".trade-row");
+  await openTrade.getByRole("button", { name: "50%" }).click();
+
+  await expect(openTrade.getByRole("alert")).toHaveText(
+    "Enter a finite close quantity greater than zero.",
+  );
+  expect(closeRequests).toBe(0);
+});
+
 test("persists review notes and tags across a reload", async ({ page, request }) => {
   await seedClosedTrade(request);
   await openWorkspace(page);
