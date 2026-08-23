@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, errorMessage } from "./api";
 import { formatAdaptiveNumber, formatDuration, formatExecutionTime, formatNumber, formatPrice, parseTags, utcDateTime } from "./helpers";
-import type { ReplaySnapshot, ReviewRecord, Trade } from "./types";
+import type { ReplaySnapshot, Trade } from "./types";
 
 type TradeReviewProps = {
   trade: Trade;
@@ -55,7 +55,7 @@ export function TradeReview({ trade, replay, precision, busy, onFocus }: TradeRe
     setSaved(false);
     setReviewError("");
     try {
-      const record = await api.patch<ReviewRecord>(`/api/trades/${trade.id}/review`, {
+      const record = await api.updateTradeReview(trade.id, {
         session_id: replay.id,
         review_note: note,
         review_tags: parseTags(`${tags.join(", ")} ${tagInput}`),

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, api } from "../src/api";
 import {
   RECENT_CLOSED_TRADES_LIMIT,
+  RECENT_FILLS_LIMIT,
   SESSION_STORAGE_KEY,
   classifyUpdate,
   mergeUpdate,
@@ -20,11 +21,11 @@ vi.mock("../src/api", () => ({
     }
   },
   api: {
-    get: vi.fn(),
-    post: vi.fn(),
-    patch: vi.fn(),
-    put: vi.fn(),
-    delete: vi.fn(),
+    getSymbols: vi.fn(),
+    getSessions: vi.fn(),
+    getSessionState: vi.fn(),
+    getTrades: vi.fn(),
+    getFills: vi.fn(),
   },
   errorMessage: (error: unknown) => (error instanceof Error ? error.message : String(error)),
 }));
@@ -51,6 +52,14 @@ function trade(id: string, status: "open" | "closed"): Trade {
 
 function fill(id: string): Fill {
   return { id, trade_id: "t1", session_id: "s1" } as Fill;
+}
+
+function closedTradeRange(count: number, start = 0): Trade[] {
+  return Array.from({ length: count }, (_, index) => trade(`t-${start + index}`, "closed"));
+}
+
+function fillRange(count: number, start = 0): Fill[] {
+  return Array.from({ length: count }, (_, index) => fill(`f-${start + index}`));
 }
 
 function snapshot(overrides: Partial<ReplaySnapshot> = {}): ReplaySnapshot {
@@ -135,10 +144,11 @@ function store() {
 }
 
 beforeEach(() => {
-  vi.mocked(api.get).mockReset();
-  vi.mocked(api.post).mockReset();
-  vi.mocked(api.patch).mockReset();
-  vi.mocked(api.put).mockReset();
+  vi.mocked(api.getSymbols).mockReset();
+  vi.mocked(api.getSessions).mockReset();
+  vi.mocked(api.getSessionState).mockReset();
+  vi.mocked(api.getTrades).mockReset();
+  vi.mocked(api.getFills).mockReset();
   store().leave();
   localStorage.clear();
 });
@@ -164,7 +174,7 @@ describe("mergeUpdate", () => {
       trades: [trade("t-open-1", "open"), trade("t-open-2", "open")],
     });
     const changed = { ...trade("t-open-1", "open"), stop_price: 99 };
-    const merged = mergeUpdate(installed, update(2, { trade_upserts: [changed] }));
+    const { replay: merged } = mergeUpdate(installed, update(2, { trade_upserts: [changed] }));
     const open = merged.trades.filter((item) => item.status === "open");
     expect(open.map((item) => item.id)).toEqual(["t-open-1", "t-open-2"]);
     expect(open[0]).toMatchObject({ id: "t-open-1", stop_price: 99 });
@@ -175,7 +185,7 @@ describe("mergeUpdate", () => {
       trades: [trade("t1", "open"), trade("t0", "closed")],
     });
     const closedTrade = { ...trade("t1", "closed") };
-    const merged = mergeUpdate(installed, update(2, {
+    const { replay: merged } = mergeUpdate(installed, update(2, {
       trade_upserts: [closedTrade],
       trade_removals_from_open: ["t1"],
       newly_closed_trades: [closedTrade],
@@ -188,7 +198,7 @@ describe("mergeUpdate", () => {
 
   it("appends new fills and de-duplicates by id", () => {
     const installed = snapshot({ fills: [fill("f1")] });
-    const merged = mergeUpdate(installed, update(2, {
+    const { replay: merged } = mergeUpdate(installed, update(2, {
       new_fills: [fill("f1"), fill("f2")],
       fills_total: 2,
     }));
@@ -204,7 +214,7 @@ describe("mergeUpdate", () => {
       trades: closed,
       closed_trades_total: RECENT_CLOSED_TRADES_LIMIT,
     });
-    const merged = mergeUpdate(installed, update(2, {
+    const { replay: merged, evictedClosedTrades } = mergeUpdate(installed, update(2, {
       trade_upserts: [{ ...trade("t-new", "closed") }],
       trade_removals_from_open: ["t-new"],
       newly_closed_trades: [{ ...trade("t-new", "closed") }],
@@ -214,6 +224,7 @@ describe("mergeUpdate", () => {
     expect(merged.trades[0].id).toBe("t1"); // oldest dropped
     expect(merged.trades.at(-1)?.id).toBe("t-new");
     expect(merged.closed_trades_truncated).toBe(true);
+    expect(evictedClosedTrades.map((item) => item.id)).toEqual(["t0"]);
   });
 
   it("keeps array references stable when the update carries no history delta", () => {
@@ -221,7 +232,7 @@ describe("mergeUpdate", () => {
       trades: [trade("t1", "open")],
       fills: [fill("f1")],
     });
-    const merged = mergeUpdate(installed, update(2));
+    const { replay: merged } = mergeUpdate(installed, update(2));
     expect(merged.trades).toBe(installed.trades);
     expect(merged.fills).toBe(installed.fills);
   });
@@ -264,7 +275,7 @@ describe("store: revision-aware updates", () => {
 
     expect(store().revision).toBe(2);
     expect(store().replay?.trades[0]).toMatchObject({ id: "t1", stop_price: 5 });
-    expect(api.get).not.toHaveBeenCalled();
+    expect(api.getSessionState).not.toHaveBeenCalled();
   });
 
   it("rejects a duplicate or stale update without touching state", async () => {
@@ -274,16 +285,16 @@ describe("store: revision-aware updates", () => {
 
     expect(store().revision).toBe(3);
     expect(store().replay?.trades[0]).toMatchObject({ id: "t1" });
-    expect(api.get).not.toHaveBeenCalled();
+    expect(api.getSessionState).not.toHaveBeenCalled();
   });
 
   it("fetches a fresh snapshot when the revision jumps ahead", async () => {
     store().installSnapshot(snapshot({ revision: 1 }));
-    vi.mocked(api.get).mockResolvedValue(snapshot({ revision: 5, trades: [trade("t5", "open")] }));
+    vi.mocked(api.getSessionState).mockResolvedValue(snapshot({ revision: 5, trades: [trade("t5", "open")] }));
 
     await store().applyUpdate(update(5));
 
-    expect(api.get).toHaveBeenCalledWith("/api/replay/sessions/s1/state");
+    expect(api.getSessionState).toHaveBeenCalledWith("s1");
     expect(store().revision).toBe(5);
     expect(store().replay?.trades.map((item) => item.id)).toEqual(["t5"]);
   });
@@ -293,7 +304,7 @@ describe("store: 409 reconciliation", () => {
   it("stops playback, surfaces a message, and re-fetches the authoritative snapshot", async () => {
     store().installSnapshot(snapshot({ revision: 1 }));
     store().setPlaying(true);
-    vi.mocked(api.get).mockResolvedValue(snapshot({ revision: 4 }));
+    vi.mocked(api.getSessionState).mockResolvedValue(snapshot({ revision: 4 }));
 
     await store().action(async () => {
       throw new ApiError("session was modified", 409);
@@ -304,12 +315,12 @@ describe("store: 409 reconciliation", () => {
     expect(state.busy).toBe(false);
     expect(state.error).toContain("another tab");
     expect(state.revision).toBe(4);
-    expect(api.get).toHaveBeenCalledWith("/api/replay/sessions/s1/state");
+    expect(api.getSessionState).toHaveBeenCalledWith("s1");
   });
 
   it("keeps the session usable after reconciliation: a fresh mutation still applies", async () => {
     store().installSnapshot(snapshot({ revision: 1 }));
-    vi.mocked(api.get).mockResolvedValue(snapshot({ revision: 4, trades: [trade("t1", "open")] }));
+    vi.mocked(api.getSessionState).mockResolvedValue(snapshot({ revision: 4, trades: [trade("t1", "open")] }));
     await store().action(async () => {
       throw new ApiError("session was modified", 409);
     });
@@ -317,6 +328,222 @@ describe("store: 409 reconciliation", () => {
     await store().applyUpdate(update(5, { trade_removals_from_open: ["t1"], newly_closed_trades: [{ ...trade("t1", "closed") }], closed_trades_total: 1 }));
     expect(store().revision).toBe(5);
     expect(store().replay?.trades[0].status).toBe("closed");
+  });
+});
+
+describe("store: live recent-history rollover", () => {
+  it("moves one evicted closed trade behind the recent window without older pages", async () => {
+    const recent = closedTradeRange(RECENT_CLOSED_TRADES_LIMIT);
+    store().installSnapshot(snapshot({
+      trades: recent,
+      closed_trades_total: RECENT_CLOSED_TRADES_LIMIT,
+    }));
+    const newest = trade(`t-${RECENT_CLOSED_TRADES_LIMIT}`, "closed");
+
+    await store().applyUpdate(update(2, {
+      trade_upserts: [newest],
+      newly_closed_trades: [newest],
+      closed_trades_total: RECENT_CLOSED_TRADES_LIMIT + 1,
+    }));
+
+    const state = store();
+    const recentIds = state.replay?.trades.map((item) => item.id) ?? [];
+    const logicalIds = [...recentIds].reverse().concat(
+      state.olderClosedTrades.map((item) => item.id),
+    );
+    expect(recentIds).toEqual(closedTradeRange(RECENT_CLOSED_TRADES_LIMIT, 1).map((item) => item.id));
+    expect(state.olderClosedTrades.map((item) => item.id)).toEqual(["t-0"]);
+    expect(state.tradesCursor).toBeNull();
+    expect(logicalIds).toHaveLength(RECENT_CLOSED_TRADES_LIMIT + 1);
+    expect(new Set(logicalIds).size).toBe(logicalIds.length);
+    expect(logicalIds).toEqual(closedTradeRange(RECENT_CLOSED_TRADES_LIMIT + 1).map((item) => item.id).reverse());
+  });
+
+  it("moves one evicted fill behind the recent window without older pages", async () => {
+    const recent = fillRange(RECENT_FILLS_LIMIT);
+    store().installSnapshot(snapshot({
+      fills: recent,
+      fills_total: RECENT_FILLS_LIMIT,
+    }));
+    const newest = fill(`f-${RECENT_FILLS_LIMIT}`);
+
+    await store().applyUpdate(update(2, {
+      new_fills: [newest],
+      fills_total: RECENT_FILLS_LIMIT + 1,
+    }));
+
+    const state = store();
+    const recentIds = state.replay?.fills.map((item) => item.id) ?? [];
+    const logicalIds = [...recentIds].reverse().concat(state.olderFills.map((item) => item.id));
+    expect(recentIds).toEqual(fillRange(RECENT_FILLS_LIMIT, 1).map((item) => item.id));
+    expect(state.olderFills.map((item) => item.id)).toEqual(["f-0"]);
+    expect(state.fillsCursor).toBeNull();
+    expect(logicalIds).toHaveLength(RECENT_FILLS_LIMIT + 1);
+    expect(new Set(logicalIds).size).toBe(logicalIds.length);
+    expect(logicalIds).toEqual(fillRange(RECENT_FILLS_LIMIT + 1).map((item) => item.id).reverse());
+  });
+
+  it("inserts evicted closed trades before loaded older pages and preserves the cursor", async () => {
+    store().installSnapshot(snapshot({
+      trades: closedTradeRange(RECENT_CLOSED_TRADES_LIMIT),
+      closed_trades_total: RECENT_CLOSED_TRADES_LIMIT + 2,
+      closed_trades_truncated: true,
+    }));
+    useReplayStore.setState({
+      olderClosedTrades: [trade("t-older-1", "closed"), trade("t-older-2", "closed")],
+      tradesCursor: "t-older-2",
+    });
+    const newest = trade(`t-${RECENT_CLOSED_TRADES_LIMIT}`, "closed");
+
+    await store().applyUpdate(update(2, {
+      trade_upserts: [newest],
+      newly_closed_trades: [newest],
+      closed_trades_total: RECENT_CLOSED_TRADES_LIMIT + 3,
+    }));
+
+    const state = store();
+    expect(state.olderClosedTrades.map((item) => item.id)).toEqual([
+      "t-0",
+      "t-older-1",
+      "t-older-2",
+    ]);
+    expect(state.tradesCursor).toBe("t-older-2");
+    const ids = [
+      ...state.replay?.trades ?? [],
+      ...state.olderClosedTrades,
+    ].map((item) => item.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it("inserts evicted fills before loaded older pages and preserves the cursor", async () => {
+    store().installSnapshot(snapshot({
+      fills: fillRange(RECENT_FILLS_LIMIT),
+      fills_total: RECENT_FILLS_LIMIT + 2,
+      fills_truncated: true,
+    }));
+    useReplayStore.setState({
+      olderFills: [fill("f-older-1"), fill("f-older-2")],
+      fillsCursor: "f-older-2",
+    });
+
+    await store().applyUpdate(update(2, {
+      new_fills: [fill(`f-${RECENT_FILLS_LIMIT}`)],
+      fills_total: RECENT_FILLS_LIMIT + 3,
+    }));
+
+    const state = store();
+    expect(state.olderFills.map((item) => item.id)).toEqual([
+      "f-0",
+      "f-older-1",
+      "f-older-2",
+    ]);
+    expect(state.fillsCursor).toBe("f-older-2");
+    const ids = [...state.replay?.fills ?? [], ...state.olderFills].map((item) => item.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it("preserves the order of multiple records evicted by one mutation", async () => {
+    store().installSnapshot(snapshot({
+      trades: closedTradeRange(RECENT_CLOSED_TRADES_LIMIT),
+      fills: fillRange(RECENT_FILLS_LIMIT),
+      closed_trades_total: RECENT_CLOSED_TRADES_LIMIT,
+      fills_total: RECENT_FILLS_LIMIT,
+    }));
+    const newTrades = closedTradeRange(5, RECENT_CLOSED_TRADES_LIMIT);
+    const newFills = fillRange(4, RECENT_FILLS_LIMIT);
+
+    await store().applyUpdate(update(2, {
+      trade_upserts: newTrades,
+      newly_closed_trades: newTrades,
+      new_fills: newFills,
+      closed_trades_total: RECENT_CLOSED_TRADES_LIMIT + newTrades.length,
+      fills_total: RECENT_FILLS_LIMIT + newFills.length,
+    }));
+
+    const state = store();
+    expect(state.olderClosedTrades.map((item) => item.id)).toEqual([
+      "t-4",
+      "t-3",
+      "t-2",
+      "t-1",
+      "t-0",
+    ]);
+    expect(state.olderFills.map((item) => item.id)).toEqual([
+      "f-3",
+      "f-2",
+      "f-1",
+      "f-0",
+    ]);
+    expect(state.replay?.trades.filter((item) => item.status === "closed")).toHaveLength(
+      RECENT_CLOSED_TRADES_LIMIT,
+    );
+    expect(state.replay?.fills).toHaveLength(RECENT_FILLS_LIMIT);
+  });
+
+  it("continues trade and fill pagination from the oldest loaded boundary", async () => {
+    store().installSnapshot(snapshot({
+      trades: closedTradeRange(RECENT_CLOSED_TRADES_LIMIT),
+      fills: fillRange(RECENT_FILLS_LIMIT),
+      closed_trades_total: RECENT_CLOSED_TRADES_LIMIT + 2,
+      fills_total: RECENT_FILLS_LIMIT + 2,
+      closed_trades_truncated: true,
+      fills_truncated: true,
+    }));
+    const newestTrade = trade(`t-${RECENT_CLOSED_TRADES_LIMIT}`, "closed");
+    await store().applyUpdate(update(2, {
+      trade_upserts: [newestTrade],
+      newly_closed_trades: [newestTrade],
+      new_fills: [fill(`f-${RECENT_FILLS_LIMIT}`)],
+      closed_trades_total: RECENT_CLOSED_TRADES_LIMIT + 3,
+      fills_total: RECENT_FILLS_LIMIT + 3,
+    }));
+    expect(store().tradesCursor).toBe("t-0");
+    expect(store().fillsCursor).toBe("f-0");
+
+    vi.mocked(api.getTrades).mockResolvedValue({
+      items: [trade("t-0", "closed"), trade("t-older-1", "closed"), trade("t-older-2", "closed")],
+      total: RECENT_CLOSED_TRADES_LIMIT + 3,
+      next_cursor: null,
+    });
+    vi.mocked(api.getFills).mockResolvedValue({
+      items: [fill("f-0"), fill("f-older-1"), fill("f-older-2")],
+      total: RECENT_FILLS_LIMIT + 3,
+      next_cursor: null,
+    });
+
+    await store().loadOlderTrades();
+    await store().loadOlderFills();
+
+    expect(api.getTrades).toHaveBeenCalledWith("s1", {
+      status: "closed",
+      limit: RECENT_CLOSED_TRADES_LIMIT,
+      cursor: "t-0",
+    });
+    expect(api.getFills).toHaveBeenCalledWith("s1", {
+      limit: 500,
+      cursor: "f-0",
+    });
+    expect(store().olderClosedTrades.map((item) => item.id)).toEqual([
+      "t-0",
+      "t-older-1",
+      "t-older-2",
+    ]);
+    expect(store().olderFills.map((item) => item.id)).toEqual([
+      "f-0",
+      "f-older-1",
+      "f-older-2",
+    ]);
+    const tradeIds = [
+      ...store().replay?.trades ?? [],
+      ...store().olderClosedTrades,
+    ].map((item) => item.id);
+    const fillIds = [...store().replay?.fills ?? [], ...store().olderFills].map((item) => item.id);
+    expect(tradeIds).toHaveLength(RECENT_CLOSED_TRADES_LIMIT + 3);
+    expect(fillIds).toHaveLength(RECENT_FILLS_LIMIT + 3);
+    expect(new Set(tradeIds).size).toBe(tradeIds.length);
+    expect(new Set(fillIds).size).toBe(fillIds.length);
+    expect(store().tradesCursor).toBeNull();
+    expect(store().fillsCursor).toBeNull();
   });
 });
 
@@ -329,7 +556,7 @@ describe("store: paginated older history", () => {
     }));
     expect(store().tradesCursor).toBe("t-in-window");
 
-    vi.mocked(api.get).mockResolvedValue({
+    vi.mocked(api.getTrades).mockResolvedValue({
       items: [trade("t-in-window", "closed"), trade("t-older-1", "closed")],
       total: 3,
       next_cursor: "t-older-1",
@@ -338,7 +565,7 @@ describe("store: paginated older history", () => {
     expect(store().olderClosedTrades.map((item) => item.id)).toEqual(["t-older-1"]);
     expect(store().tradesCursor).toBe("t-older-1");
 
-    vi.mocked(api.get).mockResolvedValue({
+    vi.mocked(api.getTrades).mockResolvedValue({
       items: [trade("t-older-1", "closed"), trade("t-oldest", "closed")],
       total: 3,
       next_cursor: null,
@@ -349,7 +576,7 @@ describe("store: paginated older history", () => {
 
     // Nothing older remains: the call is a no-op and hits the network once total.
     await store().loadOlderTrades();
-    expect(api.get).toHaveBeenCalledTimes(2);
+    expect(api.getTrades).toHaveBeenCalledTimes(2);
   });
 
   it("merges older fill pages with de-duplication", async () => {
@@ -358,7 +585,7 @@ describe("store: paginated older history", () => {
       fills_total: 2,
       fills_truncated: true,
     }));
-    vi.mocked(api.get).mockResolvedValue({
+    vi.mocked(api.getFills).mockResolvedValue({
       items: [fill("f-in-window"), fill("f-older")],
       total: 2,
       next_cursor: null,
@@ -374,7 +601,7 @@ describe("store: paginated older history", () => {
       closed_trades_total: 3,
       closed_trades_truncated: true,
     }));
-    vi.mocked(api.get).mockResolvedValue({
+    vi.mocked(api.getTrades).mockResolvedValue({
       items: [trade("t-older", "closed")],
       total: 3,
       next_cursor: null,

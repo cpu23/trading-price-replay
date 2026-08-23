@@ -32,7 +32,7 @@ export function TradeRow({ trade, replay, precision, busy, action }: TradeRowPro
       return;
     }
     setValidationError("");
-    await action(() => api.post<ReplayUpdate>(`/api/trades/${trade.id}/close`, {
+    await action(() => api.closeTrade(trade.id, {
       session_id: replay.id,
       quantity,
     }));
@@ -55,10 +55,15 @@ export function TradeRow({ trade, replay, precision, busy, action }: TradeRowPro
       }
     }
     setValidationError("");
-    await action(() => api.put<ReplayUpdate>(`/api/trades/${trade.id}/${kind}`, {
-      session_id: replay.id,
-      price,
-    }));
+    await action(() => kind === "stop"
+      ? api.updateTradeStop(trade.id, {
+        session_id: replay.id,
+        price,
+      })
+      : api.updateTradeTarget(trade.id, {
+        session_id: replay.id,
+        price,
+      }));
   }
 
   return (

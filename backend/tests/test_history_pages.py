@@ -559,3 +559,50 @@ def test_trade_fills_are_read_by_chart_anchor_window(client):
     # A window covering only the two exit anchors' neighbourhood.
     late = repository.get_trade_fills(session_id, trade_id, base + timedelta(minutes=2), base + timedelta(minutes=7))
     assert [fill.id for fill in late] == [all_fills[1].id, all_fills[2].id]
+
+
+def test_last_fill_anchor_uses_composite_index_for_large_ledger(client):
+    """The latest anchor is one covering-index row, not a decoded fill ledger."""
+    session_id = create_session(client)["id"]
+    assert client.post(f"/api/replay/sessions/{session_id}/step").status_code == 200
+    opened = client.post(
+        f"/api/replay/sessions/{session_id}/orders/market",
+        json={"direction": "long", "quantity": 1},
+    )
+    assert opened.status_code == 200, opened.text
+    trade_id = opened.json()["trade_upserts"][0]["id"]
+    base = datetime(2026, 1, 2, 17, 1, tzinfo=timezone.utc)
+    count = 5_000
+    rows = [
+        (
+            f"bulk-fill-{index}",
+            session_id,
+            trade_id,
+            "{}",
+            (base + timedelta(minutes=index)).isoformat(),
+            (base + timedelta(minutes=index)).isoformat(),
+        )
+        for index in range(count)
+    ]
+    sql = (
+        "SELECT anchor_time FROM fills "
+        "WHERE session_id = ? AND trade_id = ? AND anchor_time IS NOT NULL "
+        "ORDER BY anchor_time DESC LIMIT 1"
+    )
+    with repository.connect() as db:
+        db.executemany(
+            "INSERT INTO fills(id,session_id,trade_id,fill_json,anchor_time,created_at) "
+            "VALUES(?,?,?,?,?,?)",
+            rows,
+        )
+        plan = db.execute(
+            f"EXPLAIN QUERY PLAN {sql}",
+            (session_id, trade_id),
+        ).fetchall()
+        selected = db.execute(sql, (session_id, trade_id)).fetchall()
+
+    assert any("ix_fills_session_trade_anchor" in row[-1] for row in plan)
+    assert len(selected) == 1
+    assert repository.get_last_fill_anchor(session_id, trade_id) == (
+        base + timedelta(minutes=count - 1)
+    )

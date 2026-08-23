@@ -462,20 +462,19 @@ def get_trade_fills(session_id: str, trade_id: str,
 
 
 def get_last_fill_anchor(session_id: str, trade_id: str) -> datetime | None:
-    """The chart anchor of one trade's most recent fill (its final exit when
-    the trade is closed).
+    """The chart anchor of one trade's latest fill.
 
-    Fills are inserted in execution order, so the highest rowid is the
-    latest fill; one indexed read, independent of the ledger's length."""
+    The v8 composite index satisfies both predicates and descending anchor
+    order, so this reads one scalar regardless of the partial-exit ledger size.
+    """
     with connect() as db:
         row = db.execute(
-            "SELECT COALESCE(json_extract(fill_json, '$.source_candle_time'), "
-            "json_extract(fill_json, '$.timestamp')) "
-            "FROM fills WHERE session_id = ? AND trade_id = ? "
-            "ORDER BY rowid DESC LIMIT 1",
+            "SELECT anchor_time FROM fills "
+            "WHERE session_id = ? AND trade_id = ? AND anchor_time IS NOT NULL "
+            "ORDER BY anchor_time DESC LIMIT 1",
             (session_id, trade_id),
         ).fetchone()
-    return datetime.fromisoformat(row[0]) if row else None
+    return datetime.fromisoformat(row["anchor_time"]) if row else None
 
 def upsert_trade_review(session_id: str, trade_id: str, note: str, tags: list[str]) -> dict[str, object]:
     """Persist the user review (note + tags) for one trade of a session."""

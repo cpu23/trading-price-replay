@@ -5,7 +5,7 @@ import { formatAdaptiveNumber, formatExecutionTime, formatMetricLabel, formatNum
 import { TradeRow } from "./TradeRow";
 import { TradeReview } from "./TradeReview";
 import { useReplayStore } from "./store";
-import type { ChartHistoryResponse, Fill, ReplaySnapshot, ReplayStats, ReplayUpdate, Timeframe, Trade, TradeDirection } from "./types";
+import type { ChartHistoryResponse, Fill, ReplaySnapshot, ReplayStats, Timeframe, Trade, TradeDirection } from "./types";
 
 const TIMEFRAMES: Timeframe[] = ["1m", "5m", "15m", "1h", "4h", "1d"];
 const STEP_SIZES = [1, 2, 3, 5, 10, 15];
@@ -80,7 +80,7 @@ function ReplayWorkspaceContent({ replay }: { replay: ReplaySnapshot }) {
   const canLoadOlderFills = replay.fills_total > replay.fills.length + olderFills.length;
 
   const step = useCallback(async () => {
-    await action(() => api.post<ReplayUpdate>(`/api/replay/sessions/${replay.id}/step`));
+    await action(() => api.stepSession(replay.id));
   }, [action, replay.id]);
 
   const placeOrder = useCallback(async (direction: TradeDirection) => {
@@ -101,7 +101,7 @@ function ReplayWorkspaceContent({ replay }: { replay: ReplaySnapshot }) {
       return;
     }
     setTicketError("");
-    await action(() => api.post<ReplayUpdate>(`/api/replay/sessions/${replay.id}/orders/market`, {
+    await action(() => api.placeMarketOrder(replay.id, {
       direction,
       quantity,
       stop_price: stop.trim() ? Number(stop) : null,
@@ -159,7 +159,7 @@ function ReplayWorkspaceContent({ replay }: { replay: ReplaySnapshot }) {
 
   async function closeAll() {
     setConfirmCloseAll(false);
-    await action(() => api.post<ReplayUpdate>(`/api/replay/sessions/${replay.id}/close-all`));
+    await action(() => api.closeAll(replay.id));
   }
 
   const replayRef = useRef(replay);
@@ -176,8 +176,7 @@ function ReplayWorkspaceContent({ replay }: { replay: ReplaySnapshot }) {
     setChartFocus({ trade, window: null });
     if (first !== undefined && last !== undefined && from >= first && to <= last) return;
     try {
-      const windowResponse = await api.get<ChartHistoryResponse>(
-        `/api/replay/sessions/${current.id}/trades/${trade.id}/chart-history`);
+      const windowResponse = await api.getChartHistory(current.id, trade.id);
       setChartFocus((prev) => (prev && prev.trade.id === trade.id
         ? { trade, window: windowResponse }
         : prev));
@@ -227,7 +226,7 @@ function ReplayWorkspaceContent({ replay }: { replay: ReplaySnapshot }) {
               className={timeframe === replay.visible_timeframe ? "active" : ""}
               aria-pressed={timeframe === replay.visible_timeframe}
               disabled={busy}
-              onClick={() => void action(() => api.patch<ReplayUpdate>(`/api/replay/sessions/${replay.id}/settings`, { visible_timeframe: timeframe }))}
+              onClick={() => void action(() => api.updateSettings(replay.id, { visible_timeframe: timeframe }))}
             >
               {timeframe}
             </button>
@@ -239,7 +238,7 @@ function ReplayWorkspaceContent({ replay }: { replay: ReplaySnapshot }) {
             id="step-size"
             value={replay.advance_step_minutes}
             disabled={busy || replay.status === "completed"}
-            onChange={(event) => void action(() => api.patch<ReplayUpdate>(`/api/replay/sessions/${replay.id}/settings`, { advance_step_minutes: Number(event.target.value) }))}
+            onChange={(event) => void action(() => api.updateSettings(replay.id, { advance_step_minutes: Number(event.target.value) }))}
           >
             {STEP_SIZES.map((minutes) => <option key={minutes} value={minutes}>{minutes} min</option>)}
           </select>
@@ -372,7 +371,7 @@ function ReplayWorkspaceContent({ replay }: { replay: ReplaySnapshot }) {
               type="checkbox"
               checked={replay.enabled_indicators.includes("sma_close_35")}
               disabled={busy}
-              onChange={() => void action(() => api.post<ReplayUpdate>(`/api/replay/sessions/${replay.id}/indicators/sma_close_35/toggle`))}
+              onChange={() => void action(() => api.toggleIndicator(replay.id, "sma_close_35"))}
             />
             <span><strong>SMA 35 close</strong><small>Causal moving average on the selected timeframe</small></span>
           </label>

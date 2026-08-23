@@ -1,7 +1,7 @@
 import { FormEvent, useState } from "react";
 import { api, errorMessage } from "./api";
 import { useReplayStore } from "./store";
-import type { ImportResponse, InspectPathResponse } from "./types";
+import type { TimeframeProfile } from "./types";
 
 export function ImportPanel() {
   const loadSymbols = useReplayStore((state) => state.loadSymbols);
@@ -13,7 +13,7 @@ export function ImportPanel() {
   const [pnlCurrency, setPnlCurrency] = useState("USD");
   const [pricePrecision, setPricePrecision] = useState(2);
   const [contractMultiplier, setContractMultiplier] = useState(1);
-  const [profile, setProfile] = useState("utc_aligned");
+  const [profile, setProfile] = useState<TimeframeProfile>("utc_aligned");
   const [busyAction, setBusyAction] = useState<"inspect" | "import" | null>(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -27,7 +27,7 @@ export function ImportPanel() {
     setError("");
     setMessage("");
     try {
-      const response = await api.post<InspectPathResponse>("/api/imports/inspect-path", { path: path.trim() });
+      const response = await api.inspectImportPath({ path: path.trim() });
       setFiles(response.files);
       setSelectedFile(response.files[0] ?? "");
       if (response.files.length === 0) {
@@ -74,7 +74,7 @@ export function ImportPanel() {
     setError("");
     setMessage("");
     try {
-      const response = await api.post<ImportResponse>("/api/imports", {
+      const response = await api.createImport({
         path: selectedFile,
         symbol: normalizedSymbol,
         asset_class: assetClass.trim(),
@@ -161,7 +161,7 @@ export function ImportPanel() {
           </div>
           <div className="field-group">
             <label htmlFor="default-profile">Default alignment</label>
-            <select id="default-profile" value={profile} onChange={(event) => setProfile(event.target.value)}>
+            <select id="default-profile" value={profile} onChange={(event) => setProfile(event.target.value === "new_york_close" ? "new_york_close" : "utc_aligned")}>
               <option value="utc_aligned">UTC aligned</option>
               <option value="new_york_close">New York close</option>
             </select>

@@ -6,6 +6,7 @@ import type { components } from "./api-types";
 type Schemas = components["schemas"];
 /** M1-resampled timeframe options. */
 export type Timeframe = NonNullable<Schemas["SettingsRequest"]["visible_timeframe"]>;
+export type TimeframeProfile = Schemas["ImportRequest"]["default_profile"];
 
 export type Direction = Schemas["Trade"]["direction"];
 export type TradeDirection = Schemas["Trade"]["direction"];

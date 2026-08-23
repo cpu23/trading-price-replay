@@ -3,14 +3,12 @@ import { ApiError, api, errorMessage } from "./api";
 import type {
   DisplayBar,
   Fill,
-  FillHistoryPage,
   IndicatorPoint,
   ReplaySnapshot,
   ReplayUpdate,
   SessionSummary,
   SymbolMetadata,
   Trade,
-  TradeHistoryPage,
 } from "./types";
 
 export const SESSION_STORAGE_KEY = "price-replay-session-id";
@@ -39,8 +37,16 @@ export function classifyUpdate(installedRevision: number, update: ReplayUpdate):
   return "gap";
 }
 
-/** Apply a mutation delta to an installed snapshot without re-sending history. */
-export function mergeUpdate(replay: ReplaySnapshot, update: ReplayUpdate): ReplaySnapshot {
+export type ReplayMergeResult = {
+  replay: ReplaySnapshot;
+  /** Records displaced from the recent window, oldest to newest. */
+  evictedClosedTrades: Trade[];
+  /** Records displaced from the recent window, oldest to newest. */
+  evictedFills: Fill[];
+};
+
+/** Apply a mutation delta and report history displaced by the recent caps. */
+export function mergeUpdate(replay: ReplaySnapshot, update: ReplayUpdate): ReplayMergeResult {
   // Trades: upsert changed trades by id, drop closed ones from the open set,
   // append newly closed ones to the tail of the closed window.
   const openById = new Map<string, Trade>();
@@ -53,7 +59,10 @@ export function mergeUpdate(replay: ReplaySnapshot, update: ReplayUpdate): Repla
     (trade.status === "open" ? openById : closedById).set(trade.id, trade);
   }
   for (const trade of update.newly_closed_trades) closedById.set(trade.id, trade);
-  const closedTrades = [...closedById.values()].slice(-RECENT_CLOSED_TRADES_LIMIT);
+  const allClosedTrades = [...closedById.values()];
+  const closedOverflow = Math.max(0, allClosedTrades.length - RECENT_CLOSED_TRADES_LIMIT);
+  const evictedClosedTrades = allClosedTrades.slice(0, closedOverflow);
+  const closedTrades = allClosedTrades.slice(closedOverflow);
 
   // Fills: append new fills, de-duplicate by id, keep the recent cap. When no
   // delta arrives the original array references are preserved so memoized
@@ -63,9 +72,12 @@ export function mergeUpdate(replay: ReplaySnapshot, update: ReplayUpdate): Repla
   for (const fill of update.new_fills) {
     if (!fillById.has(fill.id)) fillById.set(fill.id, fill);
   }
+  const allFills = [...fillById.values()];
+  const fillOverflow = Math.max(0, allFills.length - RECENT_FILLS_LIMIT);
+  const evictedFills = allFills.slice(0, fillOverflow);
   const fills = update.new_fills.length === 0
     ? replay.fills
-    : [...fillById.values()].slice(-RECENT_FILLS_LIMIT);
+    : allFills.slice(fillOverflow);
   const trades = update.trade_upserts.length === 0
     && update.trade_removals_from_open.length === 0
     && update.newly_closed_trades.length === 0
@@ -73,28 +85,52 @@ export function mergeUpdate(replay: ReplaySnapshot, update: ReplayUpdate): Repla
     : [...openById.values(), ...closedTrades];
 
   return {
-    ...replay,
-    status: update.status,
-    revision: update.revision,
-    current_index: update.current_index,
-    current_market_time: update.current_market_time,
-    current_candle_time: update.current_candle_time,
-    current_price: update.current_price,
-    remaining_bars: update.remaining_bars,
-    visible_timeframe: update.visible_timeframe,
-    advance_step_minutes: update.advance_step_minutes,
-    enabled_indicators: update.enabled_indicators,
-    displayed_bars: update.displayed_bars,
-    indicators: update.indicators,
-    warnings: update.warnings,
-    stats: update.stats,
-    trades,
-    fills,
-    closed_trades_total: update.closed_trades_total,
-    fills_total: update.fills_total,
-    closed_trades_truncated: update.closed_trades_total > closedTrades.length,
-    fills_truncated: update.fills_total > fills.length,
+    replay: {
+      ...replay,
+      status: update.status,
+      revision: update.revision,
+      current_index: update.current_index,
+      current_market_time: update.current_market_time,
+      current_candle_time: update.current_candle_time,
+      current_price: update.current_price,
+      remaining_bars: update.remaining_bars,
+      visible_timeframe: update.visible_timeframe,
+      advance_step_minutes: update.advance_step_minutes,
+      enabled_indicators: update.enabled_indicators,
+      displayed_bars: update.displayed_bars,
+      indicators: update.indicators,
+      warnings: update.warnings,
+      stats: update.stats,
+      trades,
+      fills,
+      closed_trades_total: update.closed_trades_total,
+      fills_total: update.fills_total,
+      closed_trades_truncated: update.closed_trades_total > closedTrades.length,
+      fills_truncated: update.fills_total > fills.length,
+    },
+    evictedClosedTrades,
+    evictedFills,
   };
+}
+
+/** Join an oldest-to-newest eviction batch to newest-to-oldest older history. */
+function prependEvicted<T extends { id: string }>(evicted: T[], older: T[]): T[] {
+  if (evicted.length === 0) return older;
+  const joined: T[] = [];
+  const known = new Set<string>();
+  for (const item of [...evicted].reverse()) {
+    if (!known.has(item.id)) {
+      known.add(item.id);
+      joined.push(item);
+    }
+  }
+  for (const item of older) {
+    if (!known.has(item.id)) {
+      known.add(item.id);
+      joined.push(item);
+    }
+  }
+  return joined;
 }
 
 type ReplayStore = {
@@ -159,7 +195,7 @@ export const useReplayStore = create<ReplayStore>((set, get) => ({
   loadSymbols: async () => {
     set({ symbolsLoading: true });
     try {
-      const symbols = await api.get<SymbolMetadata[]>("/api/symbols");
+      const symbols = await api.getSymbols();
       set({ symbols, symbolsLoading: false });
     } catch (error) {
       set({ symbolsLoading: false, error: `Could not load symbols: ${errorMessage(error)}` });
@@ -169,7 +205,7 @@ export const useReplayStore = create<ReplayStore>((set, get) => ({
   loadSessions: async () => {
     set({ sessionsLoading: true });
     try {
-      const sessions = await api.get<SessionSummary[]>("/api/replay/sessions");
+      const sessions = await api.getSessions();
       set({ sessions, sessionsLoading: false });
     } catch (error) {
       set({ sessionsLoading: false, error: `Could not load sessions: ${errorMessage(error)}` });
@@ -181,7 +217,7 @@ export const useReplayStore = create<ReplayStore>((set, get) => ({
     if (!saved) return;
     set({ restoring: true, error: null });
     try {
-      const snapshot = await api.get<ReplaySnapshot>(`/api/replay/sessions/${saved}/state`);
+      const snapshot = await api.getSessionState(saved);
       get().installSnapshot(snapshot);
     } catch (error) {
       if (error instanceof ApiError && (error.status === 404 || error.status === 410)) {
@@ -229,12 +265,18 @@ export const useReplayStore = create<ReplayStore>((set, get) => ({
     const verdict = classifyUpdate(installed, update);
     if (verdict === "stale") return;
     if (verdict === "next") {
-      const replay = get().replay;
+      const { replay, olderClosedTrades, olderFills } = get();
       if (!replay || replay.id !== update.id) {
         await get().refreshReplay();
         return;
       }
-      set({ replay: mergeUpdate(replay, update), revision: update.revision });
+      const merged = mergeUpdate(replay, update);
+      set({
+        replay: merged.replay,
+        revision: update.revision,
+        olderClosedTrades: prependEvicted(merged.evictedClosedTrades, olderClosedTrades),
+        olderFills: prependEvicted(merged.evictedFills, olderFills),
+      });
       return;
     }
     // Revision gap: fetch a fresh snapshot and reconcile from the server.
@@ -245,7 +287,7 @@ export const useReplayStore = create<ReplayStore>((set, get) => ({
     const replay = get().replay;
     if (!replay) return;
     try {
-      const snapshot = await api.get<ReplaySnapshot>(`/api/replay/sessions/${replay.id}/state`);
+      const snapshot = await api.getSessionState(replay.id);
       get().installSnapshot(snapshot);
     } catch (error) {
       set({ error: `Replay reconciliation failed: ${errorMessage(error)}`, playing: false });
@@ -257,9 +299,11 @@ export const useReplayStore = create<ReplayStore>((set, get) => ({
     if (!replay || !tradesCursor || historyLoading) return;
     set({ historyLoading: true, error: null });
     try {
-      const page = await api.get<TradeHistoryPage>(
-        `/api/replay/sessions/${replay.id}/trades?status=closed&limit=200&cursor=${encodeURIComponent(tradesCursor)}`,
-      );
+      const page = await api.getTrades(replay.id, {
+        status: "closed",
+        limit: RECENT_CLOSED_TRADES_LIMIT,
+        cursor: tradesCursor,
+      });
       const known = new Set([
         ...get().replay?.trades ?? [],
         ...get().olderClosedTrades,
@@ -281,9 +325,10 @@ export const useReplayStore = create<ReplayStore>((set, get) => ({
     if (!replay || !fillsCursor || historyLoading) return;
     set({ historyLoading: true, error: null });
     try {
-      const page = await api.get<FillHistoryPage>(
-        `/api/replay/sessions/${replay.id}/fills?limit=500&cursor=${encodeURIComponent(fillsCursor)}`,
-      );
+      const page = await api.getFills(replay.id, {
+        limit: 500,
+        cursor: fillsCursor,
+      });
       const known = new Set([
         ...get().replay?.fills ?? [],
         ...get().olderFills,
