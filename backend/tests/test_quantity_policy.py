@@ -83,6 +83,20 @@ def test_zero_point_three_closed_in_tenths_displays_clean_remainders():
     assert trade.remaining_quantity == 0.0
 
 
+def test_displayed_remainder_completes_position():
+    state = make_state()
+    trade = open_trade(state, ts(1), 10.0, "long", 0.3, None, None, 1)
+    close_trade(state, trade, ts(2), 10.5, 0.1, "manual", 1)
+
+    displayed_remainder = float(displayed(trade.remaining_quantity))
+    assert displayed_remainder == 0.2
+    final_fill = close_trade(state, trade, ts(3), 10.5, displayed_remainder, "manual", 1)
+
+    assert final_fill.quantity == 0.2
+    assert trade.status == "closed"
+    assert trade.remaining_quantity == 0.0
+
+
 def test_three_tenths_closes_complete_the_trade():
     state = make_state()
     trade = open_trade(state, ts(1), 10.0, "long", 0.3, None, None, 1)
