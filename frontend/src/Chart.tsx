@@ -14,7 +14,7 @@ import {
   type Time,
   type UTCTimestamp,
 } from "lightweight-charts";
-import { clampFocusViewport, focusWithinLiveBounds, formatAdaptiveNumber, isTimestampWithinRange } from "./helpers";
+import { clampFocusViewport, focusWithinLiveBounds, formatAdaptiveNumber, intersectTimeRangeWithBarBounds, isTimestampWithinRange } from "./helpers";
 import type { ChartHistoryResponse, ReplayState } from "./types";
 
 function chartTime(timestamp: string): UTCTimestamp {
@@ -290,19 +290,25 @@ export function ReplayChart({ replay, precision, focus, onClearFocus }: {
     if (!wasFocused.current) return;
     wasFocused.current = false;
     const captured = preFocusRange.current;
-    if (captured && preFocusAtLatest.current) {
-      // The view was pinned to the latest edge; follow whatever the replay
-      // advanced to while the focus was active.
+    const liveBars = replayRef.current.displayed_bars;
+    const liveBounds = liveBars.length > 0
+      ? {
+          first: chartTime(liveBars[0].timestamp),
+          last: chartTime(liveBars.at(-1)!.timestamp),
+        }
+      : null;
+    const restoredRange = captured && liveBounds
+      ? intersectTimeRangeWithBarBounds(captured, liveBounds)
+      : null;
+    if (preFocusAtLatest.current || !restoredRange) {
+      // A latest-pinned, missing, invalid, or aged-out viewport returns to
+      // the current live edge rather than zooming stale or unavailable bars.
       instance.timeScale().scrollToRealTime();
-    } else if (captured) {
-      instance.timeScale().setVisibleRange(captured);
     } else {
-      const data = candleSeries.data();
-      if (data.length >= 10) {
-        instance.timeScale().setVisibleLogicalRange({ from: data.length - 60, to: data.length + 5 });
-      } else {
-        instance.timeScale().fitContent();
-      }
+      instance.timeScale().setVisibleRange({
+        from: restoredRange.from as UTCTimestamp,
+        to: restoredRange.to as UTCTimestamp,
+      });
     }
     preFocusRange.current = null;
   }, [focus]);
@@ -320,9 +326,9 @@ export function ReplayChart({ replay, precision, focus, onClearFocus }: {
           className="chart-focus-reset"
           type="button"
           onClick={onClearFocus}
-          aria-label="Return chart to the latest replay area"
+          aria-label="Return to live chart"
         >
-          Back to latest
+          Return to live chart
         </button>
       )}
     </div>

@@ -193,6 +193,27 @@ export function tradeFocusEnd(
 /** Chart bar time bounds in epoch seconds. */
 export type BarTimeBounds = { first: number; last: number };
 
+/** Clamp a captured epoch-second viewport to the live bars that still
+ * exist. Lightweight Charts may also return non-numeric time values, which
+ * cannot be restored against epoch-second bar bounds. */
+export function intersectTimeRangeWithBarBounds(
+  range: { from: unknown; to: unknown },
+  barBounds: BarTimeBounds,
+): { from: number; to: number } | null {
+  if (typeof range.from !== "number"
+    || typeof range.to !== "number"
+    || !Number.isFinite(range.from)
+    || !Number.isFinite(range.to)
+    || !Number.isFinite(barBounds.first)
+    || !Number.isFinite(barBounds.last)
+    || range.from > range.to
+    || barBounds.first > barBounds.last
+  ) return null;
+  const from = Math.max(range.from, barBounds.first);
+  const to = Math.min(range.to, barBounds.last);
+  return from <= to ? { from, to } : null;
+}
+
 /** Derive the visible range for a focused trade. With a bounded server
  * window the viewport is clamped to the returned bar bounds — the trade's
  * full span may reach beyond the window (truncated trades, causal clamps),

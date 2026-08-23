@@ -15,6 +15,7 @@ import {
   historyCountLabel,
   isEditableKeyboardTarget,
   isTimestampWithinRange,
+  intersectTimeRangeWithBarBounds,
   parsePositiveQuantity,
   parseTags,
   quantityDraft,
@@ -196,6 +197,24 @@ describe("trade focus anchors", () => {
       },
     ];
     expect(tradeFocusEnd(trade, fills)).toBe("2025-02-03T14:06:00Z");
+  });
+});
+
+describe("captured live viewport intersection", () => {
+  const liveBounds = { first: 1000, last: 2000 };
+
+  it("preserves a captured range with full overlap", () => {
+    expect(intersectTimeRangeWithBarBounds({ from: 1200, to: 1800 }, liveBounds))
+      .toEqual({ from: 1200, to: 1800 });
+  });
+
+  it("clamps a partially overlapping range to the live bars", () => {
+    expect(intersectTimeRangeWithBarBounds({ from: 800, to: 1500 }, liveBounds))
+      .toEqual({ from: 1000, to: 1500 });
+  });
+
+  it("returns null when the captured range no longer overlaps live bars", () => {
+    expect(intersectTimeRangeWithBarBounds({ from: 400, to: 900 }, liveBounds)).toBeNull();
   });
 });
 
