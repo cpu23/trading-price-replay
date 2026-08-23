@@ -25,10 +25,13 @@ export default defineConfig({
   retries: 0,
   timeout: 60_000,
   expect: { timeout: 10_000 },
-  reporter: process.env.CI ? "github" : "list",
+  reporter: process.env.CI
+    ? [["github"], ["json", { outputFile: "test-results/report.json" }]]
+    : "list",
   use: {
     baseURL: frontendUrl,
     trace: "retain-on-failure",
+    screenshot: "only-on-failure",
   },
   webServer: [
     {

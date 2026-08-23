@@ -52,21 +52,29 @@ One-minute OHLC cannot identify the exact intrabar moment of a stop or target to
 
 Realized balance is the sum of committed fill P&L. Unrealized P&L deducts the projected exit-side costs for each open remainder, making reported equity a liquidation value.
 
+Close quantities remain binary floats on the wire and in persisted legacy rows, but every backend close path delegates to one policy. It subtracts `Decimal(str(value))` representations to remove ordinary base-10 display drift, tolerates only a 256-ULP residual that is smaller than both positive operands, and uses exact comparison when that window would be material (including subnormal quantities). A tolerated final close fills the actual stored remainder and writes canonical `0.0`; genuine oversize is rejected. There is no inferred symbol lot step, and price or P&L fields are not converted to Decimal.
+
 ## Statistics and trade review
 
-Session statistics come from a durable incremental accumulator persisted with the replay snapshot. Every authoritative mutation (entry fill, exit fill, final close) updates the relevant aggregates in the same transaction: costs, balance, direction P&L, and — only when a trade finally reaches zero quantity — completed/win/loss and realized-R aggregates. Partial exits never move final-trade statistics. Current unrealized P&L is always recomputed from open trades, and maximum drawdown is the worse of the historical realized drawdown and the current equity below the historical peak.
+Session statistics come from a durable incremental accumulator persisted with the replay snapshot. Every authoritative mutation (entry fill, exit fill, final close) updates the relevant aggregates in the same transaction: costs, balance, direction P&L, and — only when a trade finally reaches canonical zero quantity — completed/win/loss and finite realized-R aggregates. Partial exits never move final-trade statistics. Current unrealized P&L is recomputed from open trades, and maximum drawdown is the worse of historical realized drawdown and current equity below the historical peak.
 
-Because of the accumulator, routine replay operations never scan history: resume and step load a working set (scalar session state, open trades, bounded recent history), and session statistics are O(1) reads. Legacy sessions without an accumulator get it backfilled once from their existing fills and trades on first load, transactionally with the normal commit.
+Counts and totals are numeric zero with no observations. Ratios and averages whose denominator is empty are null: `win_rate`, `profit_factor` without a gross loss, R averages without qualifying risk observations, winning/losing averages without that outcome, and average holding time without a completed trade. Non-finite derived R values are excluded rather than emitted; the wire contract permits finite numbers or null only.
+
+Because of the accumulator, routine replay operations never scan history: resume and step load scalar session state, every open trade, at most 200 recent closed trades, and at most 1,000 fills. Session statistics are O(1) reads. Legacy sessions without an accumulator get it backfilled once from normalized fills and trades inside the migration/commit transaction.
 
 Closed trades carry review metadata: final exit reason, holding duration, net realized P&L, realized R (null when the trade had no initial risk), total costs, and close-based excursion. Excursions are **close-based by construction**: they update only from causally revealed candle closes while the trade is open, never from a close after an intrabar stop or target already closed the trade. The UI labels them `MFE (close)` / `MAE (close)` and never presents them as exact intrabar values.
 
 Each closed trade also stores a user `review_note` and `review_tags`, mutated through `PATCH /api/trades/{trade_id}/review` with bounded, trimmed, de-duplicated tags.
 
+Complete closed-trade and fill history stays authoritative in normalized tables and is fetched through cursor pagination. Client arrays mirror the server bounds during ordinary stepping; explicitly loaded older pages are de-duplicated without entering routine mutation payloads.
+
+Historical chart focus is a read-only bounded view, not replay mutation. The server returns at most 2,000 M1 source bars around a trade, clamps an active session to its latest revealed candle opening time, reports truncation, and anchors fills to source candles. The client exposes loading, error/retry, and truncation states. Selection generations prevent trade A from installing over trade B; a timeframe/indicator signature also prevents an old settings response from installing. Clearing focus restores the overlapping part of the pre-focus live time range when possible, otherwise it follows the current live edge.
+
 ## API contract and frontend types
 
 The FastAPI OpenAPI document is the single source of truth for wire types. `backend/openapi.json` is committed and regenerated from the running app by `scripts/export_openapi.py`; CI fails if it drifts from the code. The frontend derives `frontend/src/api-types.ts` from that schema with `openapi-typescript`, and `frontend/src/types.ts` is a thin layer of semantic aliases over the generated types — the client no longer hand-maintains API models. CI regenerates and diffs both artifacts.
 
-Playwright e2e tests (`frontend/e2e/`) exercise the browser-level workflows most likely to regress — causal reveal timing, a full market-order round-trip, review-note persistence across reload, and chart focus — against a deterministic fixture through the real backend.
+Playwright e2e tests (`frontend/e2e/`) exercise causal reveal timing, market-order and tiny-quantity close validation, review persistence, bounded historical focus, and history beyond both routine caps against deterministic fixtures through the real backend and frontend. A test-only CLI builds the large normalized ledger in one transaction; it is not a production endpoint. Each run uses an ephemeral data root, and CI uploads retained traces, failure screenshots, and a JSON report when browser tests fail.
 
 ## Alignment profiles
 
