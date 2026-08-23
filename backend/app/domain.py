@@ -60,10 +60,11 @@ class Trade:
     realized_pnl: float = 0.0
     status: Literal["open", "closed"] = "open"
     entry_market_price: float | None = None
-    # Final-exit metadata, persisted the moment the remaining quantity reaches
-    # exactly zero. Partial exits never set these; they describe only the fill
-    # that closed the final remainder. All None on legacy closed trades, which
-    # recorded no exit metadata.
+    # Final-exit metadata, persisted the moment the trade closes (its stored
+    # remainder is set to exactly 0.0, whether by an exact final close or a
+    # tolerated residual/overshoot; see app.quantity). Partial exits never set
+    # these; they describe only the fill that closed the final remainder. All
+    # None on legacy closed trades, which recorded no exit metadata.
     exit_market_price: float | None = None
     exit_price: float | None = None
     exit_time: datetime | None = None

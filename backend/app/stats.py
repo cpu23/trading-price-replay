@@ -31,7 +31,7 @@ def book_fill(state: ReplayState, trade_direction: str, fill: Fill) -> None:
 
 
 def book_trade_close(state: ReplayState, trade: Trade, exit_time: datetime | None) -> None:
-    """Book the final close of a trade (remaining quantity reached exactly zero).
+    """Book the final close of a trade (its stored remainder reached exactly 0.0).
 
     Partial closes never call this; final trade statistics are only booked once
     the trade is actually closed. `exit_time` is the final fill's effective
