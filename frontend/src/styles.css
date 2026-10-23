@@ -38,15 +38,15 @@
   --space-2: 0.5rem;
   --space-3: 0.75rem;
   --space-4: 1rem;
-  --space-5: 1.5rem;
-  --space-6: 2rem;
-  --space-7: 3rem;
+  --space-5: 1rem;
+  --space-6: 1.25rem;
+  --space-7: 1.5rem;
   --radius-small: 0.25rem;
   --radius-medium: 0.5rem;
   --radius-large: 0.75rem;
   --shadow-raised: 0 1rem 2.5rem rgb(2 7 12 / 22%);
   --transition-fast: 160ms ease-out;
-  --content-width: 100rem;
+  --content-width: 120rem;
   --chart-height: clamp(24rem, 56vh, 38rem);
   font-family: var(--font-sans);
   color: var(--text-primary);
@@ -143,7 +143,7 @@ th {
 .app {
   width: min(100%, var(--content-width));
   margin: 0 auto;
-  padding: var(--space-6);
+  padding: var(--space-3);
 }
 
 .app-loading {
@@ -159,8 +159,11 @@ th {
 }
 
 .hero {
-  max-width: 48rem;
-  padding: var(--space-7) 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  align-items: baseline;
+  padding: var(--space-2) 0 var(--space-4);
 }
 
 .eyebrow,
@@ -182,36 +185,58 @@ th {
   letter-spacing: 0.16em;
 }
 
+.hero .eyebrow {
+  flex-basis: 100%;
+}
+
 .hero h1 {
-  margin: var(--space-3) 0;
-  font-size: clamp(2.75rem, 7vw, 5.5rem);
-  line-height: 0.98;
-  letter-spacing: -0.045em;
+  margin: 0;
+  font-size: clamp(1.5rem, 3vw, 2rem);
+  line-height: 1.15;
+  letter-spacing: -0.035em;
 }
 
 .hero-copy {
-  max-width: 42rem;
   margin: 0;
   color: var(--text-secondary);
-  font-size: 1.05rem;
-  line-height: 1.7;
+  font-size: 0.8rem;
+  line-height: 1.5;
 }
 
 .setup {
   display: grid;
-  grid-template-columns: minmax(22rem, 0.85fr) minmax(32rem, 1.15fr);
-  gap: var(--space-4);
+  grid-template-columns: minmax(20rem, 0.85fr) minmax(30rem, 1.15fr);
+  grid-template-areas: "import new" "history new";
+  gap: var(--space-3);
   align-items: start;
 }
 
+.setup > .panel {
+  grid-area: import;
+}
+
 .session-stack {
-  display: grid;
-  gap: var(--space-4);
+  display: contents;
+}
+
+.session-stack > .panel:first-child {
+  grid-area: new;
+}
+
+.history-panel {
+  grid-area: history;
+}
+
+@media (min-width: 90rem) {
+  .setup {
+    grid-template-columns: minmax(19rem, 0.85fr) minmax(28rem, 1.2fr) minmax(22rem, 1fr);
+    grid-template-areas: "import new history";
+  }
 }
 
 .panel {
   min-width: 0;
-  padding: var(--space-5);
+  padding: var(--space-3);
   border: 1px solid var(--border);
   border-radius: var(--radius-large);
   background: var(--surface-raised);
@@ -223,7 +248,7 @@ th {
   gap: var(--space-4);
   align-items: flex-start;
   justify-content: space-between;
-  margin-bottom: var(--space-5);
+  margin-bottom: var(--space-3);
 }
 
 .panel h2 {
@@ -241,7 +266,7 @@ th {
 .form-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-4);
+  gap: var(--space-3);
 }
 
 .form-grid-wide {
@@ -250,9 +275,21 @@ th {
 
 .field-group {
   display: grid;
-  gap: var(--space-2);
+  gap: var(--space-1);
   min-width: 0;
-  margin-bottom: var(--space-4);
+  margin-bottom: var(--space-2);
+}
+
+.form-grid > .field-group {
+  margin-bottom: 0;
+}
+
+.form-grid {
+  margin-bottom: var(--space-3);
+}
+
+fieldset > .form-grid:last-child {
+  margin-bottom: 0;
 }
 
 .field-group label,
@@ -297,8 +334,8 @@ th {
 
 fieldset {
   min-width: 0;
-  margin: var(--space-4) 0;
-  padding: var(--space-4);
+  margin: var(--space-3) 0;
+  padding: var(--space-3);
   border: 1px solid var(--border);
   border-radius: var(--radius-medium);
 }
@@ -410,7 +447,7 @@ fieldset > .field-hint {
 .empty-state {
   display: grid;
   gap: var(--space-2);
-  min-height: 9rem;
+  min-height: 5rem;
   place-content: center;
   color: var(--text-secondary);
   text-align: center;
@@ -427,7 +464,7 @@ fieldset > .field-hint {
 }
 
 .empty-state.compact {
-  min-height: 6rem;
+  min-height: 3rem;
 }
 
 .session-list {
@@ -501,15 +538,20 @@ fieldset > .field-hint {
 
 .workspace {
   display: grid;
-  gap: var(--space-4);
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-2);
+}
+
+.workspace > * {
+  min-width: 0;
 }
 
 .workspace-header {
   display: grid;
   grid-template-columns: 1fr auto auto;
-  gap: var(--space-6);
+  gap: var(--space-4);
   align-items: center;
-  padding: var(--space-3) 0;
+  padding: var(--space-1) 0;
 }
 
 .instrument-title > div {
@@ -531,7 +573,7 @@ fieldset > .field-hint {
 
 .instrument-title h1 {
   margin: var(--space-1) 0;
-  font-size: 2rem;
+  font-size: 1.5rem;
 }
 
 .instrument-title > p,
@@ -968,6 +1010,7 @@ th {
 @media (max-width: 62rem) {
   .setup {
     grid-template-columns: 1fr;
+    grid-template-areas: "import" "new" "history";
   }
 
   .workspace-header {
@@ -1003,11 +1046,11 @@ th {
 
 @media (max-width: 45rem) {
   .app {
-    padding: var(--space-4);
+    padding: var(--space-2);
   }
 
   .hero {
-    padding: var(--space-6) 0;
+    padding: var(--space-2) 0 var(--space-3);
   }
 
   .form-grid,
