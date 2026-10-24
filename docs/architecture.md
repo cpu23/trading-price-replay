@@ -76,6 +76,10 @@ The FastAPI OpenAPI document is the single source of truth for wire types. `back
 
 Playwright e2e tests (`frontend/e2e/`) exercise causal reveal timing, market-order and tiny-quantity close validation, review persistence, bounded historical focus, and history beyond both routine caps against deterministic fixtures through the real backend and frontend. A test-only CLI builds the large normalized ledger in one transaction; it is not a production endpoint. Each run uses an ephemeral data root, and CI uploads retained traces, failure screenshots, and a JSON report when browser tests fail.
 
+## Workstation layout
+
+The setup screen uses a compact header and three columns at widths of 90rem and above: import, new session, and saved sessions. Below that, saved sessions sit under import beside the new-session form; at 62rem and below, panels stack in document order. Shared form spacing avoids adding field margins to grid gaps. The replay grid constrains its children to the available width so resizing a desktop chart to a phone viewport does not force horizontal page overflow.
+
 ## Alignment profiles
 
 - `utc_aligned`: calendar boundaries in UTC.
